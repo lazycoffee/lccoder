@@ -12,15 +12,20 @@ import { Verifier, type VerificationReport } from './verifier.js';
 import type { LLMProvider } from '../llm/provider.js';
 import type { ToolConfirmCallback } from '../roles/base-role.js';
 
+import { type SessionRecord } from '../llm/session.js';
+
 export interface DispatchResult {
   task: SubTask;
   result: Result | null;
   evaluation: Evaluation | null;
   verification: VerificationReport | null;
+  clerkSession?: SessionRecord;
+  evaluatorSession?: SessionRecord;
 }
 
 export class Dispatcher {
-  private provider: LLMProvider;
+  private clerkProvider: LLMProvider;
+  private evaluatorProvider: LLMProvider;
   private clerkModel: string;
   private evaluatorModel: string;
   private promptsDir?: string;
@@ -30,7 +35,8 @@ export class Dispatcher {
   private workingDir: string;
 
   constructor(params: {
-    provider: LLMProvider;
+    clerkProvider: LLMProvider;
+    evaluatorProvider: LLMProvider;
     clerkModel: string;
     evaluatorModel: string;
     promptsDir?: string;
@@ -39,7 +45,8 @@ export class Dispatcher {
     enableVerification?: boolean;
     workingDir?: string;
   }) {
-    this.provider = params.provider;
+    this.clerkProvider = params.clerkProvider;
+    this.evaluatorProvider = params.evaluatorProvider;
     this.clerkModel = params.clerkModel;
     this.evaluatorModel = params.evaluatorModel;
     this.promptsDir = params.promptsDir;
@@ -74,7 +81,7 @@ export class Dispatcher {
     const instruction = this.createInstruction(task);
 
     // 创建全新的办事员执行
-    const clerk = new Clerk(this.provider, this.clerkModel, this.promptsDir, {
+    const clerk = new Clerk(this.clerkProvider, this.clerkModel, this.promptsDir, {
       maxRetries: this.maxRetries,
       onToolConfirm: this.onToolConfirm,
     });
@@ -130,7 +137,7 @@ export class Dispatcher {
     }
 
     // 创建全新的评估器评估
-    const evaluator = new Evaluator(this.provider, this.evaluatorModel, this.promptsDir, {
+    const evaluator = new Evaluator(this.evaluatorProvider, this.evaluatorModel, this.promptsDir, {
       maxRetries: this.maxRetries,
     });
     const evalOutput = await evaluator.evaluate(result, plan);
@@ -140,6 +147,8 @@ export class Dispatcher {
       result,
       evaluation: evalOutput.evaluation || null,
       verification,
+      clerkSession: clerkOutput.sessionRecord,
+      evaluatorSession: evalOutput.sessionRecord,
     };
   }
 }

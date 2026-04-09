@@ -4,7 +4,7 @@
  */
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { Session, type SessionConfig } from '../llm/session.js';
+import { Session, type SessionConfig, type SessionRecord } from '../llm/session.js';
 import type { LLMProvider } from '../llm/provider.js';
 import type { RoleName } from '../schemas/common.js';
 import { getToolDefinitions, getToolExecutors } from '../tools/registry.js';
@@ -19,6 +19,7 @@ export interface RoleInput {
 export interface RoleOutput {
   text: string;
   document: Record<string, unknown> | null;
+  sessionRecord?: SessionRecord;
 }
 
 /** 工具确认回调 */
@@ -113,13 +114,19 @@ export abstract class BaseRole {
 
       // 使用最后一次尝试的文本
       if (document) {
-        return { text: lastText, document };
+        const record = session.toRecord();
+        record.outputDocument = document;
+        return { text: lastText, document, sessionRecord: record };
       }
     }
+
+    const finalRecord = session.toRecord();
+    finalRecord.outputDocument = document;
 
     return {
       text: responseText,
       document,
+      sessionRecord: finalRecord,
     };
   }
 

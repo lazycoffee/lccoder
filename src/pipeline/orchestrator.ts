@@ -7,9 +7,10 @@ import { Dispatcher, type DispatchResult } from './dispatcher.js';
 import { ProductManager } from '../roles/product-manager.js';
 import { ProjectManager } from '../roles/project-manager.js';
 import { DocumentStore } from '../documents/store.js';
-import type { LLMProvider } from '../llm/provider.js';
+import type { ProviderFactory } from '../llm/factory.js';
 import type { LcCoderConfig } from '../config/index.js';
 import { getModelForRole } from '../config/index.js';
+import { extractProjectContext, formatContextForPrompt } from './context.js';
 import type { Requirement } from '../schemas/requirement.js';
 import type { Plan } from '../schemas/plan.js';
 import type { Summary } from '../schemas/result.js';
@@ -43,20 +44,20 @@ export interface PipelineCallbacks {
 }
 
 export class Orchestrator {
-  private provider: LLMProvider;
+  private factory: ProviderFactory;
   private config: LcCoderConfig;
   private store: DocumentStore;
   private callbacks: PipelineCallbacks;
   private promptsDir?: string;
 
   constructor(params: {
-    provider: LLMProvider;
+    factory: ProviderFactory;
     config: LcCoderConfig;
     store: DocumentStore;
     callbacks: PipelineCallbacks;
     promptsDir?: string;
   }) {
-    this.provider = params.provider;
+    this.factory = params.factory;
     this.config = params.config;
     this.store = params.store;
     this.callbacks = params.callbacks;
@@ -83,6 +84,11 @@ export class Orchestrator {
    */
   async run(userInput: string): Promise<void> {
     await this.store.init();
+
+    // 自动提取项目上下文
+    const projectContext = await extractProjectContext(this.config.safety.workingDir);
+    const contextPrompt = formatContextForPrompt(projectContext);
+
     const state = createPipelineState(userInput);
     const stageStart = Date.now();
 
@@ -92,10 +98,13 @@ export class Orchestrator {
     this.callbacks.onStageStart('classifier', '正在分析请求复杂度...');
     const classification = await classifyRequest(
       userInput,
-      this.provider,
+      this.factory.getProviderForRole('classifier'),
       getModelForRole(this.config, 'classifier'),
       this.promptsDir,
     );
+    if (classification.sessionRecord) {
+      await this.store.saveSession(classification.sessionRecord);
+    }
     state.classification = classification;
     state.currentStage = 'pm';
     await savePipelineState(state, this.store);
@@ -106,11 +115,14 @@ export class Orchestrator {
       this.callbacks.onStageStart('direct-answer', '正在回答...');
       const pmStart = Date.now();
       const pm = new ProductManager(
-        this.provider,
+        this.factory.getProviderForRole('product-manager'),
         getModelForRole(this.config, 'product-manager'),
         this.promptsDir,
       );
       const answer = await pm.execute({ userMessage: userInput });
+      if (answer.sessionRecord) {
+        await this.store.saveSession(answer.sessionRecord);
+      }
       this.callbacks.onSimpleResponse(answer.text);
       this.callbacks.onStageComplete('direct-answer', Date.now() - pmStart);
       await clearPipelineState(this.store);
@@ -124,12 +136,15 @@ export class Orchestrator {
     this.callbacks.onStageStart('product-manager', '产品经理正在分析需求...');
     const onToolConfirm = this.buildToolConfirm();
     const pm = new ProductManager(
-      this.provider,
+      this.factory.getProviderForRole('product-manager'),
       getModelForRole(this.config, 'product-manager'),
       this.promptsDir,
       { maxRetries: this.config.execution.maxRetries, onToolConfirm },
     );
-    let pmResult = await pm.analyze(userInput);
+    let pmResult = await pm.analyze(`${contextPrompt}\n\n用户的需求如下：\n\n${userInput}`);
+    if (pmResult.sessionRecord) {
+      await this.store.saveSession(pmResult.sessionRecord);
+    }
     this.callbacks.onStageComplete('product-manager', Date.now() - pmStart);
 
     // 处理追问
@@ -142,6 +157,9 @@ export class Orchestrator {
         pmResult.document || {},
         answers,
       );
+      if (pmResult.sessionRecord) {
+        await this.store.saveSession(pmResult.sessionRecord);
+      }
       this.callbacks.onStageComplete('product-manager', Date.now() - refineStart);
     }
 
@@ -170,12 +188,15 @@ export class Orchestrator {
     const pjmStart = Date.now();
     this.callbacks.onStageStart('project-manager', '项目经理正在拆分任务...');
     const pjm = new ProjectManager(
-      this.provider,
+      this.factory.getProviderForRole('project-manager'),
       getModelForRole(this.config, 'project-manager'),
       this.promptsDir,
       { maxRetries: this.config.execution.maxRetries, onToolConfirm },
     );
-    const pjmResult = await pjm.createPlan(pmResult.requirement);
+    const pjmResult = await pjm.createPlan(pmResult.requirement, contextPrompt);
+    if (pjmResult.sessionRecord) {
+      await this.store.saveSession(pjmResult.sessionRecord);
+    }
     this.callbacks.onStageComplete('project-manager', Date.now() - pjmStart);
 
     if (!pjmResult.plan) {
@@ -212,6 +233,10 @@ export class Orchestrator {
   async resume(state: PipelineState): Promise<void> {
     await this.store.init();
 
+    // 自动提取项目上下文
+    const projectContext = await extractProjectContext(this.config.safety.workingDir);
+    const contextPrompt = formatContextForPrompt(projectContext);
+
     const onToolConfirm = this.buildToolConfirm();
 
     switch (state.currentStage) {
@@ -227,12 +252,15 @@ export class Orchestrator {
         const pjmStart = Date.now();
         this.callbacks.onStageStart('project-manager', '项目经理正在拆分任务（恢复中）...');
         const pjm = new ProjectManager(
-          this.provider,
+          this.factory.getProviderForRole('project-manager'),
           getModelForRole(this.config, 'project-manager'),
           this.promptsDir,
           { maxRetries: this.config.execution.maxRetries, onToolConfirm },
         );
-        const pjmResult = await pjm.createPlan(state.requirement);
+        const pjmResult = await pjm.createPlan(state.requirement, contextPrompt);
+        if (pjmResult.sessionRecord) {
+          await this.store.saveSession(pjmResult.sessionRecord);
+        }
         this.callbacks.onStageComplete('project-manager', Date.now() - pjmStart);
 
         if (!pjmResult.plan) {
@@ -273,7 +301,7 @@ export class Orchestrator {
   }
 
   /**
-   * 执行任务分发循环（抽取为公用方法，支持 run 和 resume）
+   * 执行任务分发循环（支持并行执行和依赖图）
    */
   private async executeTasks(
     state: PipelineState,
@@ -281,7 +309,8 @@ export class Orchestrator {
   ): Promise<void> {
     const plan = state.plan!;
     const dispatcher = new Dispatcher({
-      provider: this.provider,
+      clerkProvider: this.factory.getProviderForRole('clerk'),
+      evaluatorProvider: this.factory.getProviderForRole('evaluator'),
       clerkModel: getModelForRole(this.config, 'clerk'),
       evaluatorModel: getModelForRole(this.config, 'evaluator'),
       promptsDir: this.promptsDir,
@@ -292,78 +321,163 @@ export class Orchestrator {
     });
 
     const results: DispatchResult[] = [...state.completedResults];
-    const tasks = [...plan.tasks].sort((a, b) => a.order - b.order);
-    const startIndex = state.currentTaskIndex;
+    const tasks = [...plan.tasks];
+    const totalTasks = tasks.length;
+    
+    // 已经运行或运行中的任务 ID
+    const runningTaskIds = new Set<string>();
+    const completedTaskIds = new Set<string>(results.map(r => r.task.id));
+    const runningPromises = new Map<string, Promise<void>>();
+    
+    // 并行限制
+    const maxParallel = this.config.execution.parallelTasks ? 3 : 1;
 
-    for (let i = startIndex; i < tasks.length; i++) {
-      const task = tasks[i]!;
-      this.callbacks.onTaskStart(task.id, task.title, i + 1, tasks.length);
+    while (completedTaskIds.size < totalTasks) {
+      // 1. 查找可以执行的任务
+      const executableTasks = tasks.filter(task => {
+        // 还没开始，且没完成
+        if (runningTaskIds.has(task.id) || completedTaskIds.has(task.id)) return false;
+        
+        // 检查依赖
+        const depsOk = task.depends_on.every(depId => completedTaskIds.has(depId));
+        if (!depsOk) return false;
 
-      // 检查依赖是否已完成
-      const depsOk = task.depends_on.every((depId) => {
-        const depResult = results.find((r) => r.task.id === depId);
-        return depResult && depResult.result?.status === 'success';
+        // 检查文件冲突 (与当前运行中的任务)
+        const conflict = Array.from(runningTaskIds).some(runningId => {
+          const runningTask = tasks.find(t => t.id === runningId);
+          if (!runningTask) return false;
+          return task.output_files.some(f => runningTask.output_files.includes(f));
+        });
+        if (conflict) return false;
+
+        return true;
       });
 
-      if (!depsOk) {
-        // 跳过依赖未满足的任务
-        this.callbacks.onTaskComplete(task.id, false, '依赖任务未完成，跳过');
-        results.push({
-          task,
-          result: {
-            task_id: task.id,
-            executed_by: 'clerk',
-            timestamp: new Date().toISOString(),
-            status: 'skipped',
-            changes_made: [],
-            output_summary: '依赖任务未完成，跳过',
-          },
-          evaluation: null,
-          verification: null,
-        });
-        continue;
+      // 2. 如果没有可执行任务，且没有运行中的任务，说明剩下的是循环依赖或已被跳过
+      if (executableTasks.length === 0 && runningTaskIds.size === 0) {
+        // ... (skip remaining tasks logic) ...
+        const remainingTasks = tasks.filter(t => !completedTaskIds.has(t.id));
+        for (const task of remainingTasks) {
+          this.callbacks.onTaskComplete(task.id, false, '依赖未满足或发生死锁，跳过');
+          const skipResult: DispatchResult = {
+            task,
+            result: {
+              task_id: task.id,
+              executed_by: 'clerk',
+              timestamp: new Date().toISOString(),
+              status: 'skipped',
+              changes_made: [],
+              output_summary: '跳过',
+            },
+            evaluation: null,
+            verification: null,
+          };
+          results.push(skipResult);
+          completedTaskIds.add(task.id);
+        }
+        break;
       }
 
-      // 分发执行
-      const taskStart = Date.now();
-      const dispatchResult = await dispatcher.dispatchTask(task, plan);
-      results.push(dispatchResult);
+      // 3. 启动新任务 (直到达到并行上限)
+      const toStart = executableTasks.slice(0, maxParallel - runningTaskIds.size);
+      
+      for (const task of toStart) {
+        runningTaskIds.add(task.id);
+        const taskIndex = tasks.indexOf(task) + 1;
+        
+        const promise = (async () => {
+          this.callbacks.onTaskStart(task.id, task.title, taskIndex, totalTasks);
 
-      const success = dispatchResult.result?.status === 'success';
-      this.callbacks.onTaskComplete(
-        task.id,
-        success,
-        dispatchResult.result?.output_summary || '无结果',
-      );
+          // 检查依赖是否全部成功
+          const depsSuccessful = task.depends_on.every(depId => {
+            const depResult = results.find(r => r.task.id === depId);
+            return depResult && depResult.result?.status === 'success';
+          });
 
-      // 报告验证结果
-      if (dispatchResult.verification && this.callbacks.onVerification) {
-        this.callbacks.onVerification(task.id, dispatchResult.verification);
+          let dispatchResult: DispatchResult;
+
+          if (!depsSuccessful && task.depends_on.length > 0) {
+            dispatchResult = {
+              task,
+              result: {
+                task_id: task.id,
+                executed_by: 'clerk',
+                timestamp: new Date().toISOString(),
+                status: 'skipped',
+                changes_made: [],
+                output_summary: '依赖任务失败，跳过',
+              },
+              evaluation: null,
+              verification: null,
+            };
+          } else {
+            dispatchResult = await dispatcher.dispatchTask(task, plan);
+          }
+
+          const success = dispatchResult.result?.status === 'success';
+          this.callbacks.onTaskComplete(
+            task.id,
+            success,
+            dispatchResult.result?.output_summary || '无结果',
+          );
+
+          // 报告验证结果
+          if (dispatchResult.verification && this.callbacks.onVerification) {
+            this.callbacks.onVerification(task.id, dispatchResult.verification);
+          }
+
+          // 保存会话记录
+          if (dispatchResult.clerkSession) {
+            await this.store.saveSession(dispatchResult.clerkSession);
+          }
+          if (dispatchResult.evaluatorSession) {
+            await this.store.saveSession(dispatchResult.evaluatorSession);
+          }
+
+          // 保存结果到 store
+          await this.store.saveDocument(`result-${task.id}`, dispatchResult.result);
+
+          if (dispatchResult.evaluation) {
+            await this.store.saveDocument(`evaluation-${task.id}`, dispatchResult.evaluation);
+          }
+
+          results.push(dispatchResult);
+          completedTaskIds.add(task.id);
+          runningTaskIds.delete(task.id);
+          runningPromises.delete(task.id);
+          task.status = success ? 'success' : 'failed';
+
+          if (dispatchResult.evaluation?.decision === 'pause') {
+            const decision = await this.callbacks.onPause(dispatchResult.evaluation.reason);
+            if (decision === 'abort') {
+              throw new Error('USER_ABORT');
+            }
+          }
+          
+          state.completedResults = results;
+          await savePipelineState(state, this.store);
+        })();
+
+        runningPromises.set(task.id, promise);
       }
 
-      // 保存结果
-      await this.store.saveDocument(`result-${task.id}`, dispatchResult.result);
-      if (dispatchResult.evaluation) {
-        await this.store.saveDocument(`evaluation-${task.id}`, dispatchResult.evaluation);
-      }
-
-      // 更新断点状态
-      state.completedResults = results;
-      state.currentTaskIndex = i + 1;
-      await savePipelineState(state, this.store);
-
-      // 检查评估决策
-      if (dispatchResult.evaluation?.decision === 'pause') {
-        const decision = await this.callbacks.onPause(
-          dispatchResult.evaluation.reason,
-        );
-        if (decision === 'abort') {
-          break;
+      // 4. 等待任务完成
+      if (runningPromises.size > 0) {
+        // 如果我们还没达到并行上限且还有可启动的任务，我们继续循环启动它们
+        // 否则我们才真正等待
+        if (runningPromises.size >= maxParallel || executableTasks.length === toStart.length) {
+          try {
+            await Promise.race(Array.from(runningPromises.values()));
+          } catch (err: any) {
+            if (err.message === 'USER_ABORT') {
+              break;
+            }
+            throw err;
+          }
         }
       }
-
-      // 更新任务状态
-      task.status = success ? 'success' : 'failed';
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     // ==========================================

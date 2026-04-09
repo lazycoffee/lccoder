@@ -14,6 +14,28 @@ if (command === 'resume') {
     console.error('致命错误:', err.message);
     process.exit(1);
   });
+} else if (command === 'init') {
+  // 初始化配置
+  const { initApp } = await import('./cli/app.js');
+  initApp().catch((err) => {
+    console.error('致命错误:', err.message);
+    process.exit(1);
+  });
+} else if (command === 'history') {
+  // 查看历史记录
+  const { historyApp } = await import('./cli/app.js');
+  historyApp().catch((err) => {
+    console.error('致命错误:', err.message);
+    process.exit(1);
+  });
+} else if (command === 'inspect') {
+  // 查看会话详情
+  const { inspectApp } = await import('./cli/app.js');
+  const sessionId = args[1];
+  inspectApp(sessionId).catch((err) => {
+    console.error('致命错误:', err.message);
+    process.exit(1);
+  });
 } else {
   // 正常模式
   runApp().catch((err) => {

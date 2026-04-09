@@ -83,34 +83,34 @@
 
 ---
 
-### 🔲 Phase 3: 体验增强
+### ✅ Phase 3: 体验增强
 
 核心目标：让工具开箱即用，体验接近商业产品。
 
-- [ ] **每个角色可配不同模型**
+- [x] **每个角色可配不同模型**
   - 分类器/评估器用小模型（快速、便宜）
   - 项目经理/办事员用较大模型（更强能力）
   - 配置示例：`roles.clerk.model = "gemma4:26b"`
 
-- [ ] **并行任务执行**
+- [x] **并行任务执行**
   - 分析任务依赖图，无依赖的任务并行分发
   - 需要处理文件冲突（两个任务修改同一文件）
 
-- [ ] **项目上下文自动提取**
+- [x] **项目上下文自动提取**
   - 自动检测语言、框架、构建工具
   - 读取 package.json / pyproject.toml / Cargo.toml 等
   - 生成项目摘要注入到角色 Prompt 中
 
-- [ ] **`lc-coder init` 命令**
+- [x] **`lc-coder init` 命令**
   - 在项目中初始化 `.lc-coder/config.json`
   - 交互式配置：选择模型、Ollama 地址等
 
-- [ ] **更多 AI 提供商支持**
+- [x] **更多 AI 提供商支持**
   - OpenAI 兼容 API（支持 vLLM、LocalAI 等）
   - 远程 API（GPT-4o-mini、Gemini Flash 等）
   - 提供商选择器
 
-- [ ] **会话历史查看**
+- [x] **会话历史查看**
   - `lc-coder history` 查看过去的执行记录
   - `lc-coder inspect <session-id>` 查看某个会话的详细记录
 

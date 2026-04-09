@@ -18,6 +18,8 @@ class ClassifierRole extends BaseRole {
   }
 }
 
+import { type SessionRecord } from '../llm/session.js';
+
 /**
  * 分类用户请求
  */
@@ -26,26 +28,38 @@ export async function classifyRequest(
   provider: LLMProvider,
   model: string,
   promptsDir?: string,
-): Promise<{ complexity: Complexity; reason: string }> {
+): Promise<{ 
+  complexity: Complexity; 
+  reason: string; 
+  sessionRecord?: SessionRecord 
+}> {
   const classifier = new ClassifierRole(provider, model, promptsDir);
   const result = await classifier.execute({
     userMessage: userInput,
   });
 
+  let complexity: Complexity = 'complex';
+  let reason = '无法确定，默认为复杂';
+
   // 尝试解析分类结果
   if (result.document) {
     const doc = result.document as any;
     if (doc.complexity === 'simple' || doc.complexity === 'complex') {
-      return { complexity: doc.complexity, reason: doc.reason || '' };
+      complexity = doc.complexity;
+      reason = doc.reason || '';
+    }
+  } else {
+    // 回退：从文本中查找关键词
+    const text = result.text.toLowerCase();
+    if (text.includes('"simple"') || text.includes("'simple'")) {
+      complexity = 'simple';
+      reason = '从文本推断';
     }
   }
 
-  // 回退：从文本中查找关键词
-  const text = result.text.toLowerCase();
-  if (text.includes('"simple"') || text.includes("'simple'")) {
-    return { complexity: 'simple', reason: '从文本推断' };
-  }
-
-  // 默认为复杂
-  return { complexity: 'complex', reason: '无法确定，默认为复杂' };
+  return { 
+    complexity, 
+    reason, 
+    sessionRecord: result.sessionRecord 
+  };
 }

@@ -4,9 +4,7 @@
  */
 import * as p from '@clack/prompts';
 import { Orchestrator, type PipelineCallbacks } from '../pipeline/orchestrator.js';
-import { OllamaProvider } from '../llm/ollama.js';
-import { OpenAIProvider } from '../llm/openai.js';
-import type { LLMProvider } from '../llm/provider.js';
+import { ProviderFactory } from '../llm/factory.js';
 import { DocumentStore } from '../documents/store.js';
 import { loadConfig } from '../config/index.js';
 import { loadPipelineState } from '../pipeline/state.js';
@@ -17,6 +15,7 @@ import {
   reviewRequirement,
   reviewPlan,
   pauseForDecision,
+  initConfiguration,
 } from './interactive.js';
 import type { Requirement } from '../schemas/requirement.js';
 import type { Plan } from '../schemas/plan.js';
@@ -30,24 +29,16 @@ export async function runApp(): Promise<void> {
   // 加载配置
   const config = loadConfig();
 
-  // 初始化 LLM 连接
-  let provider: LLMProvider;
-  let providerName = 'Ollama';
-  if (config.provider === 'openai') {
-    if (!config.openai?.apiKey) {
-      ui.error('使用 OpenAI/Minimax 兼容提供商时，需要在配置中设置 openai.apiKey');
-      process.exit(1);
-    }
-    provider = new OpenAIProvider(config.openai.apiKey, config.openai.baseURL);
-    providerName = config.openai.baseURL?.includes('minimax') ? 'Minimax' : 'OpenAI Compatible';
-  } else {
-    provider = new OllamaProvider(config.ollamaHost);
-  }
+  // 初始化 LLM 工厂
+  const factory = new ProviderFactory(config);
 
-  // 健康检查
+  // 健康检查 (使用默认提供商)
+  const defaultProvider = factory.getDefaultProvider();
+  const providerName = config.provider === 'openai' ? 'OpenAI/Minimax' : 'Ollama';
+
   const healthSpinner = ui.createSpinner(`正在连接 ${providerName}...`);
   healthSpinner.start();
-  const health = await provider.checkHealth(config.model);
+  const health = await defaultProvider.checkHealth(config.model);
   healthSpinner.stop();
 
   if (!health.connected) {
@@ -75,7 +66,7 @@ export async function runApp(): Promise<void> {
 
   // 构建编排器
   const orchestrator = new Orchestrator({
-    provider,
+    factory,
     config,
     store,
     callbacks,
@@ -131,17 +122,8 @@ export async function resumeApp(): Promise<void> {
   ui.banner();
 
   const config = loadConfig();
-  let provider: LLMProvider;
-  if (config.provider === 'openai') {
-    if (!config.openai?.apiKey) {
-      ui.error('使用 OpenAI/Minimax 兼容提供商时，需要在配置中设置 openai.apiKey');
-      process.exit(1);
-    }
-    provider = new OpenAIProvider(config.openai.apiKey, config.openai.baseURL);
-  } else {
-    provider = new OllamaProvider(config.ollamaHost);
-  }
-  
+  const factory = new ProviderFactory(config);
+
   const store = new DocumentStore();
   await store.init();
 
@@ -176,7 +158,7 @@ export async function resumeApp(): Promise<void> {
   const callbacks = buildCallbacks();
 
   const orchestrator = new Orchestrator({
-    provider,
+    factory,
     config,
     store,
     callbacks,
@@ -348,4 +330,57 @@ function buildCallbacks(): PipelineCallbacks {
       ui.verificationReport(report.checks);
     },
   };
+}
+
+/**
+ * 初始化配置入口
+ */
+export async function initApp(): Promise<void> {
+  ui.banner();
+  await initConfiguration();
+  p.outro('配置初始化完成 🎉');
+}
+
+/**
+ * 历史记录入口
+ */
+export async function historyApp(): Promise<void> {
+  ui.banner();
+  const store = new DocumentStore();
+  const sessions = await store.listSessions();
+  ui.historyList(sessions);
+}
+
+/**
+ * 查看会话详情入口
+ */
+export async function inspectApp(id?: string): Promise<void> {
+  ui.banner();
+  const store = new DocumentStore();
+  
+  let targetId = id;
+  if (!targetId) {
+    const sessions = await store.listSessions();
+    if (sessions.length === 0) {
+      ui.info('无会话记录');
+      return;
+    }
+    const choice = await p.select({
+      message: '选择要查看的会话：',
+      options: sessions.map(s => ({
+        value: s.id,
+        label: `${s.id} (${s.role}) - ${new Date(s.startedAt).toLocaleString()}`,
+      })),
+    });
+    if (p.isCancel(choice)) return;
+    targetId = choice as string;
+  }
+
+  const record = await store.loadSession(targetId);
+  if (!record) {
+    ui.error(`未找到会话: ${targetId}`);
+    return;
+  }
+
+  ui.sessionDetail(record);
 }

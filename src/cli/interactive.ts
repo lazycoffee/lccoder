@@ -102,6 +102,87 @@ export async function reviewPlan(plan: Plan): Promise<boolean> {
   return confirmed as boolean;
 }
 
+import { writeFile, mkdir } from 'fs/promises';
+import { join } from 'path';
+import { existsSync } from 'fs';
+
+/**
+ * 初始化项目配置
+ */
+export async function initConfiguration(workingDir: string = process.cwd()): Promise<void> {
+  p.intro('初始化 LC-Coder 项目配置');
+
+  const provider = await p.select({
+    message: '选择 LLM 提供商：',
+    options: [
+      { value: 'ollama', label: 'Ollama (本地)' },
+      { value: 'openai', label: 'OpenAI 兼容 (OpenAI, Minimax, DeepSeek 等)' },
+    ],
+  });
+
+  if (p.isCancel(provider)) return;
+
+  const model = await p.text({
+    message: '输入默认模型名称：',
+    initialValue: provider === 'ollama' ? 'gemma4:latest' : 'abab6.5s-chat',
+  });
+
+  if (p.isCancel(model)) return;
+
+  let config: any = {
+    provider,
+    model,
+    roles: {},
+    execution: {
+      maxRetries: 2,
+      parallelTasks: false,
+      autoConfirm: false,
+    },
+    safety: {
+      allowShellExec: false,
+      allowFileWrite: true,
+      workingDir: workingDir,
+    },
+  };
+
+  if (provider === 'ollama') {
+    const host = await p.text({
+      message: 'Ollama 地址：',
+      initialValue: 'http://localhost:11434',
+    });
+    if (p.isCancel(host)) return;
+    config.ollamaHost = host;
+  } else {
+    const apiKey = await p.text({
+      message: 'API Key：',
+      placeholder: 'sk-xxxxxxxxxxxx',
+    });
+    if (p.isCancel(apiKey)) return;
+    
+    const baseURL = await p.text({
+      message: 'Base URL (可选)：',
+      placeholder: 'https://api.openai.com/v1',
+    });
+    if (p.isCancel(baseURL)) return;
+    
+    config.openai = {
+      apiKey: apiKey as string,
+      baseURL: baseURL as string || undefined,
+    };
+  }
+
+  // 保存配置
+  const dotDir = join(workingDir, '.lc-coder');
+  if (!existsSync(dotDir)) {
+    await mkdir(dotDir, { recursive: true });
+  }
+
+  const configPath = join(dotDir, 'config.json');
+  await writeFile(configPath, JSON.stringify(config, null, 2));
+
+  p.note(`配置已保存到 ${configPath}`, '✅ 初始化成功');
+}
+
 /**
  * 暂停等待人工决策
  */

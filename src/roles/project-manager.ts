@@ -29,9 +29,13 @@ export class ProjectManager extends BaseRole {
   /**
    * 基于需求报告生成工作计划
    */
-  async createPlan(requirement: Requirement): Promise<RoleOutput & { plan?: Plan }> {
+  async createPlan(requirement: Requirement, contextPrompt?: string): Promise<RoleOutput & { plan?: Plan }> {
+    const userMessage = contextPrompt 
+      ? `${contextPrompt}\n\n请基于上游的需求分析报告，分析项目代码，然后制定详细的工作计划。`
+      : '请基于上游的需求分析报告，分析项目代码，然后制定详细的工作计划。';
+
     const result = await this.execute({
-      userMessage: '请基于上游的需求分析报告，分析项目代码，然后制定详细的工作计划。',
+      userMessage,
       document: requirement as unknown as Record<string, unknown>,
     });
 

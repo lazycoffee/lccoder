@@ -84,4 +84,41 @@ export class DocumentStore {
   getBaseDir(): string {
     return this.baseDir;
   }
+
+  /** 列出所有会话记录 */
+  async listSessions(): Promise<{ id: string; role: string; model: string; startedAt: string }[]> {
+    if (!existsSync(this.sessionsDir)) return [];
+    const { readdir } = await import('fs/promises');
+    const files = await readdir(this.sessionsDir);
+    const sessions = [];
+    for (const file of files) {
+      if (file.startsWith('session-') && file.endsWith('.json')) {
+        try {
+          const raw = await readFile(join(this.sessionsDir, file), 'utf-8');
+          const data = JSON.parse(raw);
+          sessions.push({
+            id: data.id,
+            role: data.role,
+            model: data.model,
+            startedAt: data.startedAt,
+          });
+        } catch {
+          // 忽略损坏的文件
+        }
+      }
+    }
+    return sessions.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  }
+
+  /** 加载特定会话 */
+  async loadSession(id: string): Promise<SessionRecord | null> {
+    const filePath = join(this.sessionsDir, `session-${id}.json`);
+    if (!existsSync(filePath)) return null;
+    try {
+      const raw = await readFile(filePath, 'utf-8');
+      return JSON.parse(raw) as SessionRecord;
+    } catch {
+      return null;
+    }
+  }
 }
