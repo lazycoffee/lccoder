@@ -32,19 +32,20 @@ export const grepSearchTool: ToolDefinition = {
 
 export async function grepSearchExecutor(
   args: Record<string, unknown>,
+  workingDir: string = process.cwd(),
 ): Promise<unknown> {
   const pattern = String(args.pattern);
-  const searchPath = resolve(process.cwd(), String(args.path || '.'));
+  const searchPath = resolve(workingDir, String(args.path || '.'));
   const filePattern = args.file_pattern ? String(args.file_pattern) : undefined;
 
   try {
-    // 使用 grep 命令进行搜索
-    const grepArgs = ['-rn', '--include', filePattern || '*', pattern, searchPath];
-    if (!filePattern) {
-      grepArgs.splice(2, 2); // 移除 --include 如果没有指定
+    const grepArgs = ['grep', '-rn', '--max-count=5'];
+    if (filePattern) {
+      grepArgs.push('--include', filePattern);
     }
+    grepArgs.push(pattern, searchPath);
 
-    const proc = Bun.spawn(['grep', '-rn', '-l', '--max-count=5', pattern, searchPath], {
+    const proc = Bun.spawn(grepArgs, {
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -59,9 +60,7 @@ export async function grepSearchExecutor(
 
     // 限制输出
     const lines = output.trim().split('\n').slice(0, 20);
-    // 将绝对路径转为相对路径
-    const cwd = process.cwd();
-    const relative = lines.map((l) => l.replace(cwd + '/', ''));
+    const relative = lines.map((line) => line.replace(`${workingDir}/`, ''));
     return relative.join('\n');
   } catch (err: any) {
     return `搜索错误: ${err.message}`;

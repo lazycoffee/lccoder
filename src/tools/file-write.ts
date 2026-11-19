@@ -29,10 +29,11 @@ export const fileWriteTool: ToolDefinition = {
 
 export async function fileWriteExecutor(
   args: Record<string, unknown>,
+  workingDir: string = process.cwd(),
 ): Promise<unknown> {
   const path = String(args.path);
   const content = String(args.content);
-  const fullPath = resolve(process.cwd(), path);
+  const fullPath = resolve(workingDir, path);
 
   try {
     await mkdir(dirname(fullPath), { recursive: true });

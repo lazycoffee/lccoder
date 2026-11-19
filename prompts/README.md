@@ -10,7 +10,8 @@
 | `product-manager.md` | 产品经理 | 理解需求、追问用户、输出需求报告 |
 | `project-manager.md` | 项目经理 | 拆分任务、制定计划 |
 | `clerk.md` | 办事员 | 按指令执行具体操作 |
-| `evaluator.md` | 评估器 | 评估执行结果、决定是否继续 |
+| `qa-engineer.md` | QA Engineer | 复核真实产物、生成结构化测试报告 |
+| `evaluator.md` | 评估器 | 基于 QA 报告和执行结果决定是否继续 |
 
 ## 编写原则
 
@@ -37,7 +38,7 @@
 ## 修改流程
 
 1. 直接编辑对应的 `.md` 文件
-2. 保存后，下次运行 `lc-coder` 会自动加载更新的 prompt
+2. 保存后，下次运行 `lccoder` 会自动加载更新的 prompt
 3. 不需要重新编译或重启
 
 ## 变量注入

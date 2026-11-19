@@ -14,7 +14,7 @@ import { shellExecTool, shellExecExecutor } from './shell-exec.js';
 /** 所有可用工具 */
 const ALL_TOOLS: Record<string, {
   definition: ToolDefinition;
-  executor: (args: Record<string, unknown>) => Promise<unknown>;
+  executor: (args: Record<string, unknown>, workingDir?: string) => Promise<unknown>;
 }> = {
   file_read: { definition: fileReadTool, executor: fileReadExecutor },
   file_write: { definition: fileWriteTool, executor: fileWriteExecutor },
@@ -27,9 +27,12 @@ const ALL_TOOLS: Record<string, {
 /** 角色→可用工具映射 */
 const ROLE_TOOLS: Record<RoleName, string[]> = {
   'classifier': [],
+  'direct-answer': [],
+  'bug-triage': ['file_read', 'dir_list', 'grep_search'],
   'product-manager': ['file_read', 'dir_list', 'grep_search'],
   'project-manager': ['file_read', 'dir_list', 'grep_search'],
   'clerk': ['file_read', 'file_write', 'file_patch', 'dir_list', 'grep_search', 'shell_exec'],
+  'qa-engineer': ['file_read', 'dir_list', 'grep_search'],
   'evaluator': [],
 };
 
@@ -48,13 +51,14 @@ export function getToolDefinitions(role: RoleName): ToolDefinition[] {
  */
 export function getToolExecutors(
   role: RoleName,
+  workingDir?: string,
 ): Map<string, (args: Record<string, unknown>) => Promise<unknown>> {
   const map = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
   const toolNames = ROLE_TOOLS[role] || [];
   for (const name of toolNames) {
     const tool = ALL_TOOLS[name];
     if (tool) {
-      map.set(name, tool.executor);
+      map.set(name, (args) => tool.executor(args, workingDir));
     }
   }
   return map;

@@ -3,7 +3,7 @@
  * 负责评估执行结果，决定是否继续
  */
 import { BaseRole } from './base-role.js';
-import { EvaluationSchema, type Evaluation, type Result } from '../schemas/result.js';
+import { EvaluationSchema, type Evaluation, type QaReport, type Result } from '../schemas/result.js';
 import type { Plan } from '../schemas/plan.js';
 import type { LLMProvider } from '../llm/provider.js';
 import type { RoleOutput } from './base-role.js';
@@ -31,9 +31,11 @@ export class Evaluator extends BaseRole {
   async evaluate(
     result: Result,
     plan: Plan,
+    qaReport?: QaReport | null,
   ): Promise<RoleOutput & { evaluation?: Evaluation }> {
     const context = {
       task_result: result,
+      qa_report: qaReport || null,
       plan_summary: {
         total_tasks: plan.tasks.length,
         critical_path: plan.critical_path,

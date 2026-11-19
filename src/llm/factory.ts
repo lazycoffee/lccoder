@@ -4,14 +4,18 @@
  */
 import type { LLMProvider } from './provider.js';
 import { OllamaProvider } from './ollama.js';
-import { OpenAIProvider } from './openai.js';
-import { type LcCoderConfig, getProviderForRole } from '../config/index.js';
+import { MiniMaxProvider } from './minimax.js';
+import { type LccoderConfig, getProviderForRole } from '../config/index.js';
 
-export class ProviderFactory {
+export interface ProviderResolver {
+  getProviderForRole(role: string): LLMProvider;
+}
+
+export class ProviderFactory implements ProviderResolver {
   private providers: Map<string, LLMProvider> = new Map();
-  private config: LcCoderConfig;
+  private config: LccoderConfig;
 
-  constructor(config: LcCoderConfig) {
+  constructor(config: LccoderConfig) {
     this.config = config;
   }
 
@@ -30,11 +34,11 @@ export class ProviderFactory {
     }
 
     let provider: LLMProvider;
-    if (providerType === 'openai') {
-      if (!this.config.openai?.apiKey) {
-        throw new Error('未配置 OpenAI API Key，请在 .lc-coder/config.json 中设置');
+    if (providerType === 'minimax') {
+      if (!this.config.minimax?.apiKey) {
+        throw new Error('未配置 MiniMax API Key，请在 .lccoder/config.json 或 MINIMAX_API_KEY 中设置');
       }
-      provider = new OpenAIProvider(this.config.openai.apiKey, this.config.openai.baseURL);
+      provider = new MiniMaxProvider(this.config.minimax.apiKey, this.config.minimax.baseURL);
     } else {
       provider = new OllamaProvider(this.config.ollamaHost);
     }

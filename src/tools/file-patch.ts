@@ -33,11 +33,12 @@ export const filePatchTool: ToolDefinition = {
 
 export async function filePatchExecutor(
   args: Record<string, unknown>,
+  workingDir: string = process.cwd(),
 ): Promise<unknown> {
   const path = String(args.path);
   const search = String(args.search);
   const replace = String(args.replace);
-  const fullPath = resolve(process.cwd(), path);
+  const fullPath = resolve(workingDir, path);
 
   try {
     const content = await readFile(fullPath, 'utf-8');

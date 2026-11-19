@@ -1,11 +1,12 @@
 /**
  * 文档存储管理
- * 所有流水线文档都存储在 .lc-coder/ 目录下
+ * 所有流水线文档都存储在 .lccoder/ 目录下
  */
-import { writeFile, readFile, mkdir } from 'fs/promises';
+import { writeFile, readFile, mkdir, readdir, stat } from 'fs/promises';
 import { join, resolve } from 'path';
 import { existsSync } from 'fs';
 import type { SessionRecord } from '../llm/session.js';
+import type { GuiRuntimeEvent } from '../gui/runtime-events.js';
 
 export class DocumentStore {
   private baseDir: string;
@@ -14,7 +15,8 @@ export class DocumentStore {
   private currentDir: string;
 
   constructor(workingDir?: string) {
-    this.baseDir = join(workingDir || process.cwd(), '.lc-coder');
+    const root = workingDir || process.cwd();
+    this.baseDir = join(root, '.lccoder');
     this.documentsDir = join(this.baseDir, 'documents');
     this.sessionsDir = join(this.baseDir, 'sessions');
     this.currentDir = join(this.baseDir, 'current');
@@ -44,6 +46,27 @@ export class DocumentStore {
     } catch {
       return null;
     }
+  }
+
+  /** 列出所有文档 */
+  async listDocuments(): Promise<{ name: string; updatedAt: string }[]> {
+    if (!existsSync(this.documentsDir)) return [];
+
+    const files = await readdir(this.documentsDir);
+    const documents = await Promise.all(
+      files
+        .filter((file) => file.endsWith('.json'))
+        .map(async (file) => {
+          const filePath = join(this.documentsDir, file);
+          const fileStat = await stat(filePath);
+          return {
+            name: file.replace(/\.json$/, ''),
+            updatedAt: fileStat.mtime.toISOString(),
+          };
+        }),
+    );
+
+    return documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   /** 保存会话记录 */
@@ -119,6 +142,37 @@ export class DocumentStore {
       return JSON.parse(raw) as SessionRecord;
     } catch {
       return null;
+    }
+  }
+
+  /** 读取运行时事件 */
+  async listRuntimeEvents(): Promise<GuiRuntimeEvent[]> {
+    const filePath = join(this.currentDir, 'runtime-events.json');
+    if (!existsSync(filePath)) return [];
+    try {
+      const raw = await readFile(filePath, 'utf-8');
+      const events = JSON.parse(raw);
+      return Array.isArray(events) ? (events as GuiRuntimeEvent[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** 追加运行时事件 */
+  async appendRuntimeEvent(event: GuiRuntimeEvent): Promise<void> {
+    const filePath = join(this.currentDir, 'runtime-events.json');
+    const events = await this.listRuntimeEvents();
+    events.push(event);
+    const trimmedEvents = events.slice(-200);
+    await writeFile(filePath, JSON.stringify(trimmedEvents, null, 2), 'utf-8');
+  }
+
+  /** 清理运行时事件 */
+  async clearRuntimeEvents(): Promise<void> {
+    const filePath = join(this.currentDir, 'runtime-events.json');
+    if (existsSync(filePath)) {
+      const { unlink } = await import('fs/promises');
+      await unlink(filePath);
     }
   }
 }

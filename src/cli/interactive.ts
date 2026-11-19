@@ -110,13 +110,13 @@ import { existsSync } from 'fs';
  * 初始化项目配置
  */
 export async function initConfiguration(workingDir: string = process.cwd()): Promise<void> {
-  p.intro('初始化 LC-Coder 项目配置');
+  p.intro('初始化 lccoder 项目配置');
 
   const provider = await p.select({
     message: '选择 LLM 提供商：',
     options: [
       { value: 'ollama', label: 'Ollama (本地)' },
-      { value: 'openai', label: 'OpenAI 兼容 (OpenAI, Minimax, DeepSeek 等)' },
+      { value: 'minimax', label: 'MiniMax (云端)' },
     ],
   });
 
@@ -124,7 +124,7 @@ export async function initConfiguration(workingDir: string = process.cwd()): Pro
 
   const model = await p.text({
     message: '输入默认模型名称：',
-    initialValue: provider === 'ollama' ? 'gemma4:latest' : 'abab6.5s-chat',
+    initialValue: provider === 'ollama' ? 'gemma4:latest' : 'MiniMax-M2.5',
   });
 
   if (p.isCancel(model)) return;
@@ -154,25 +154,25 @@ export async function initConfiguration(workingDir: string = process.cwd()): Pro
     config.ollamaHost = host;
   } else {
     const apiKey = await p.text({
-      message: 'API Key：',
+      message: 'MiniMax API Key：',
       placeholder: 'sk-xxxxxxxxxxxx',
     });
     if (p.isCancel(apiKey)) return;
     
     const baseURL = await p.text({
-      message: 'Base URL (可选)：',
-      placeholder: 'https://api.openai.com/v1',
+      message: 'MiniMax Base URL：',
+      initialValue: 'https://api.minimaxi.com/v1',
     });
     if (p.isCancel(baseURL)) return;
     
-    config.openai = {
+    config.minimax = {
       apiKey: apiKey as string,
-      baseURL: baseURL as string || undefined,
+      baseURL: baseURL as string,
     };
   }
 
   // 保存配置
-  const dotDir = join(workingDir, '.lc-coder');
+  const dotDir = join(workingDir, '.lccoder');
   if (!existsSync(dotDir)) {
     await mkdir(dotDir, { recursive: true });
   }

@@ -1,20 +1,45 @@
 {
-  "name": "lc-coder",
-  "version": "0.1.0",
-  "description": "小模型流水线编码工具 — 让小型 AI 模型也能高质量编码",
+  "name": "lccoder",
+  "version": "0.1.1",
+  "description": "小模型流水线编码工具 lccoder — 让小型 AI 模型也能高质量编码",
+  "homepage": "https://github.com/lazycoffee/lccoder#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lazycoffee/lccoder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lazycoffee/lccoder/issues"
+  },
   "module": "src/index.ts",
   "type": "module",
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "gui",
+    "prompts",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
-    "lc-coder": "src/index.ts"
+    "lccoder": "src/index.ts"
   },
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts",
+    "gui:build": "bunx vite build --config gui/vite.config.ts",
+    "gui:dev": "bunx vite --config gui/vite.config.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "bun run check"
   },
-  "keywords": ["ai", "coding", "cli", "small-model", "pipeline", "ollama", "gemma"],
+  "keywords": ["ai", "coding", "cli", "small-model", "pipeline", "ollama", "minimax", "gemma"],
   "license": "MIT",
+  "packageManager": "bun@1.3.11",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "vitest": "^4.1.2"
@@ -24,10 +49,19 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.2.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
     "chalk": "^5.6.2",
+    "hono": "^4.12.12",
     "ollama": "^0.6.3",
     "openai": "^6.33.0",
     "ora": "^9.3.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^8.0.8",
     "zod": "^4.3.6"
   }
 }

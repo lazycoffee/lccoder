@@ -24,13 +24,13 @@ export const shellExecTool: ToolDefinition = {
 
 export async function shellExecExecutor(
   args: Record<string, unknown>,
+  workingDir: string = process.cwd(),
 ): Promise<unknown> {
   const command = String(args.command);
-  const cwd = process.cwd();
 
   try {
     const proc = Bun.spawn(['sh', '-c', command], {
-      cwd,
+      cwd: workingDir,
       stdout: 'pipe',
       stderr: 'pipe',
     });

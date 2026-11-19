@@ -25,9 +25,10 @@ export const fileReadTool: ToolDefinition = {
 
 export async function fileReadExecutor(
   args: Record<string, unknown>,
+  workingDir: string = process.cwd(),
 ): Promise<unknown> {
   const path = String(args.path);
-  const fullPath = resolve(process.cwd(), path);
+  const fullPath = resolve(workingDir, path);
   try {
     const content = await readFile(fullPath, 'utf-8');
     // 限制返回长度，避免上下文爆炸

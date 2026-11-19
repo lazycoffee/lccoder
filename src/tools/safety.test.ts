@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isDangerousCommand, requiresConfirmation } from './safety.js';
-import type { LcCoderConfig } from '../config/index.js';
+import type { LccoderConfig } from '../config/index.js';
 
 describe('safety - isDangerousCommand', () => {
   it('should flag rm -rf as dangerous', () => {
@@ -38,7 +38,7 @@ describe('safety - requiresConfirmation', () => {
       autoConfirm: false,
     },
     roles: {},
-  } as unknown as LcCoderConfig;
+  } as unknown as LccoderConfig;
 
   it('should require confirmation for dangerous shell commands regardless of config', () => {
     const result = requiresConfirmation('shell_exec', { command: 'rm -rf node_modules' }, { ...mockConfig, safety: { allowShellExec: true, allowFileWrite: true, workingDir: process.cwd() } });

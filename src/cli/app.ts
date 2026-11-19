@@ -9,6 +9,7 @@ import { DocumentStore } from '../documents/store.js';
 import { loadConfig } from '../config/index.js';
 import { loadPipelineState } from '../pipeline/state.js';
 import { ui } from './ui.js';
+import { createGuiEventEmitter } from '../gui/events.js';
 import {
   getUserInput,
   askQuestions,
@@ -34,7 +35,7 @@ export async function runApp(): Promise<void> {
 
   // 健康检查 (使用默认提供商)
   const defaultProvider = factory.getDefaultProvider();
-  const providerName = config.provider === 'openai' ? 'OpenAI/Minimax' : 'Ollama';
+  const providerName = config.provider === 'minimax' ? 'MiniMax' : 'Ollama';
 
   const healthSpinner = ui.createSpinner(`正在连接 ${providerName}...`);
   healthSpinner.start();
@@ -43,13 +44,13 @@ export async function runApp(): Promise<void> {
 
   if (!health.connected) {
     ui.error(`无法连接到 ${providerName}`);
-    ui.info(config.provider === 'openai' ? '请检查网络连接或 API Key。' : `请确保 Ollama 已启动：ollama serve (${config.ollamaHost})`);
+    ui.info(config.provider === 'minimax' ? '请检查网络连接、MiniMax API Key 或 Base URL。' : `请确保 Ollama 已启动：ollama serve (${config.ollamaHost})`);
     process.exit(1);
   }
 
   if (!health.modelAvailable) {
     ui.warn(`模型 ${config.model} 未找到`);
-    ui.info(config.provider === 'openai' ? '请检查模型名称是否拼写正确，或者您的 API Key 是否有权限访问。' : `请先拉取模型：ollama pull ${config.model}`);
+    ui.info(config.provider === 'minimax' ? '请检查 MiniMax 模型名称是否正确，或 API Key 是否有对应模型权限。' : `请先拉取模型：ollama pull ${config.model}`);
     process.exit(1);
   }
 
@@ -57,12 +58,14 @@ export async function runApp(): Promise<void> {
 
   // 初始化文档存储
   const store = new DocumentStore();
+  await store.init();
+  await store.clearRuntimeEvents();
 
   // 获取 prompts 目录路径
   const promptsDir = new URL('../../prompts', import.meta.url).pathname;
 
   // 构建回调
-  const callbacks = buildCallbacks();
+  const callbacks = buildCallbacks(store);
 
   // 构建编排器
   const orchestrator = new Orchestrator({
@@ -74,7 +77,6 @@ export async function runApp(): Promise<void> {
   });
 
   // 检查是否有中断的流水线
-  await store.init();
   const savedState = await loadPipelineState(store);
   if (savedState) {
     ui.resumePrompt(savedState.currentStage, savedState.savedAt);
@@ -126,6 +128,7 @@ export async function resumeApp(): Promise<void> {
 
   const store = new DocumentStore();
   await store.init();
+  await store.clearRuntimeEvents();
 
   // 检查是否有中断的流水线
   const savedState = await loadPipelineState(store);
@@ -155,7 +158,7 @@ export async function resumeApp(): Promise<void> {
   }
 
   const promptsDir = new URL('../../prompts', import.meta.url).pathname;
-  const callbacks = buildCallbacks();
+  const callbacks = buildCallbacks(store);
 
   const orchestrator = new Orchestrator({
     factory,
@@ -178,12 +181,14 @@ export async function resumeApp(): Promise<void> {
 /**
  * 构建流水线回调（抽取为公用函数）
  */
-function buildCallbacks(): PipelineCallbacks {
+function buildCallbacks(store: DocumentStore): PipelineCallbacks {
   let currentSpinner: ReturnType<typeof ui.createSpinner> | null = null;
   let stageStartTime = 0;
+  const emitGuiEvent = createGuiEventEmitter(store);
 
   return {
     onStageStart(stage: string, description: string) {
+      emitGuiEvent('stage-start', { stage, description });
       const icons: Record<string, string> = {
         'classifier': '🔍',
         'direct-answer': '💬',
@@ -208,6 +213,7 @@ function buildCallbacks(): PipelineCallbacks {
     },
 
     onStageComplete(stage: string, durationMs?: number) {
+      emitGuiEvent('stage-complete', { stage, durationMs: durationMs || (Date.now() - stageStartTime) });
       if (currentSpinner) {
         const time = durationMs || (Date.now() - stageStartTime);
         currentSpinner.succeed(`完成 (${ui.formatDuration(time)})`);
@@ -240,6 +246,7 @@ function buildCallbacks(): PipelineCallbacks {
     },
 
     onTaskStart(taskId: string, title: string, index: number, total: number) {
+      emitGuiEvent('task-start', { taskId, title, index, total });
       if (currentSpinner) {
         currentSpinner.stop();
         currentSpinner = null;
@@ -251,6 +258,7 @@ function buildCallbacks(): PipelineCallbacks {
     },
 
     onTaskComplete(taskId: string, success: boolean, summary: string) {
+      emitGuiEvent('task-complete', { taskId, success, summary });
       if (currentSpinner) {
         const time = Date.now() - stageStartTime;
         if (success) {
@@ -265,6 +273,7 @@ function buildCallbacks(): PipelineCallbacks {
     },
 
     async onPause(reason: string): Promise<'continue' | 'abort'> {
+      emitGuiEvent('pause', { reason });
       if (currentSpinner) {
         currentSpinner.stop();
         currentSpinner = null;
@@ -281,6 +290,7 @@ function buildCallbacks(): PipelineCallbacks {
     },
 
     onSummary(summary: Summary) {
+      emitGuiEvent('summary', { summary });
       if (currentSpinner) {
         currentSpinner.stop();
         currentSpinner = null;
@@ -301,6 +311,7 @@ function buildCallbacks(): PipelineCallbacks {
     },
 
     onError(error: string) {
+      emitGuiEvent('error', { error });
       if (currentSpinner) {
         currentSpinner.fail(error);
         currentSpinner = null;
@@ -327,6 +338,7 @@ function buildCallbacks(): PipelineCallbacks {
     },
 
     onVerification(taskId: string, report: VerificationReport) {
+      emitGuiEvent('verification', { taskId, report });
       ui.verificationReport(report.checks);
     },
   };
@@ -383,4 +395,23 @@ export async function inspectApp(id?: string): Promise<void> {
   }
 
   ui.sessionDetail(record);
+}
+
+/**
+ * GUI 入口
+ */
+export async function guiApp(portArg?: string): Promise<void> {
+  ui.banner();
+  const port = portArg ? Number(portArg) : 3456;
+  if (!Number.isFinite(port) || port <= 0) {
+    ui.error(`无效端口: ${portArg}`);
+    return;
+  }
+
+  ui.info(`正在启动 GUI，端口 ${port}...`);
+  const { startGuiServer } = await import('../gui/server.js');
+  await startGuiServer({
+    workingDir: process.cwd(),
+    port,
+  });
 }

@@ -6,9 +6,12 @@ import { z } from 'zod';
 /** 角色名称枚举 */
 export const RoleNameSchema = z.enum([
   'classifier',
+  'direct-answer',
+  'bug-triage',
   'product-manager',
   'project-manager',
   'clerk',
+  'qa-engineer',
   'evaluator',
 ]);
 export type RoleName = z.infer<typeof RoleNameSchema>;

@@ -1,36 +1,43 @@
 /**
- * OpenAI 兼容提供商实现 (支持 MiniMax, DeepSeek, GPT-4, 甚至本地 vLLM 等)
+ * MiniMax 提供商实现
+ * 通过 OpenAI SDK 的兼容接口接入 MiniMax。
  */
 import OpenAI from 'openai';
 import type { Message } from 'ollama';
 import type { LLMProvider, LLMResponse, ToolDefinition, ToolCall } from './provider.js';
 
-export class OpenAIProvider implements LLMProvider {
+const DEFAULT_MINIMAX_BASE_URL = 'https://api.minimaxi.com/v1';
+
+export class MiniMaxProvider implements LLMProvider {
   private client: OpenAI;
 
-  constructor(apiKey: string, baseURL?: string) {
+  constructor(apiKey: string, baseURL: string = DEFAULT_MINIMAX_BASE_URL) {
     this.client = new OpenAI({
       apiKey,
-      baseURL: baseURL || 'https://api.openai.com/v1',
+      baseURL,
     });
   }
 
-  // 转换 Ollama 消息格式为 OpenAI 格式
   private convertMessages(system: string, messages: Message[]): OpenAI.Chat.ChatCompletionMessageParam[] {
     const msgs: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: system }
+      { role: 'system', content: system },
     ];
-    
+
     for (const msg of messages) {
       if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system' || msg.role === 'tool') {
         msgs.push({
           role: msg.role as any,
-          content: msg.content
+          content: msg.content,
         });
       }
     }
-    
+
     return msgs;
+  }
+
+  private normalizeContent(content: string | null | undefined): string {
+    if (!content) return '';
+    return content.replace(/^\s*<think>[\s\S]*?<\/think>\s*/i, '').trim();
   }
 
   async chat(params: {
@@ -43,11 +50,11 @@ export class OpenAIProvider implements LLMProvider {
     const response = await this.client.chat.completions.create({
       model: params.model,
       messages,
-      temperature: 0.1, // 编码任务偏好较低的温度
+      temperature: 0.1,
     });
 
     return {
-      content: response.choices[0]?.message?.content || '',
+      content: this.normalizeContent(response.choices[0]?.message?.content),
     };
   }
 
@@ -58,20 +65,19 @@ export class OpenAIProvider implements LLMProvider {
     tools: ToolDefinition[];
   }): Promise<LLMResponse> {
     const messages = this.convertMessages(params.system, params.messages);
-
-    const openaiTools = params.tools.map(tool => ({
+    const tools = params.tools.map((tool) => ({
       type: 'function' as const,
       function: {
         name: tool.function.name,
         description: tool.function.description,
-        parameters: tool.function.parameters as any
-      }
+        parameters: tool.function.parameters as any,
+      },
     }));
 
     const response = await this.client.chat.completions.create({
       model: params.model,
       messages,
-      tools: openaiTools,
+      tools,
       temperature: 0.1,
     });
 
@@ -91,7 +97,7 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     return {
-      content: message?.content || '',
+      content: this.normalizeContent(message?.content),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     };
   }
@@ -102,10 +108,8 @@ export class OpenAIProvider implements LLMProvider {
     error?: string;
   }> {
     try {
-      // 部分兼容 API (如 Minimax) 可能没有 /models 端点或者不支持直接 list。
-      // 我们发一个非常简单的 hello 请求来测试连通性和鉴权。
       await this.client.chat.completions.create({
-        model: model,
+        model,
         messages: [{ role: 'user', content: 'hello' }],
         max_tokens: 1,
       });
@@ -115,17 +119,14 @@ export class OpenAIProvider implements LLMProvider {
         return {
           connected: true,
           modelAvailable: false,
-          error: 'API Key invalid or Unauthorized',
+          error: 'MiniMax API Key 无效或未授权',
         };
       }
-      if (err.status === 404 && err.url?.includes('/models')) {
-        // 如果是因为 /models 404，我们假设它是通的（前面已经改成了发 chat 测试，所以这里应该不会走到了）
-        return { connected: true, modelAvailable: true };
-      }
+
       return {
         connected: false,
         modelAvailable: false,
-        error: err.message || 'Failed to connect to OpenAI compatible API',
+        error: err.message || 'Failed to connect to MiniMax API',
       };
     }
   }

@@ -17,6 +17,14 @@ export interface VerificationReport {
   checks: VerifyResult[];
   allPassed: boolean;
   timestamp: string;
+  profile: 'coding' | 'debug';
+}
+
+export interface VerifyOptions {
+  includeTypeCheck?: boolean;
+  includeLint?: boolean;
+  includeTests?: boolean;
+  profile?: 'coding' | 'debug';
 }
 
 interface ProjectInfo {
@@ -148,18 +156,27 @@ export class Verifier {
   }
 
   /** 运行所有可用的验证 */
-  async verify(): Promise<VerificationReport> {
+  async verify(options: VerifyOptions = {}): Promise<VerificationReport> {
+    const {
+      includeTypeCheck = true,
+      includeLint = true,
+      includeTests = true,
+      profile = 'coding',
+    } = options;
     const checks: VerifyResult[] = [];
 
-    const typeCheck = await this.runTypeCheck();
-    if (typeCheck) checks.push(typeCheck);
+    if (includeTypeCheck) {
+      const typeCheck = await this.runTypeCheck();
+      if (typeCheck) checks.push(typeCheck);
+    }
 
-    const lintCheck = await this.runLint();
-    if (lintCheck) checks.push(lintCheck);
+    if (includeLint) {
+      const lintCheck = await this.runLint();
+      if (lintCheck) checks.push(lintCheck);
+    }
 
-    // 注意：测试运行可能比较慢，先不自动运行
-    // 只有在有 TypeScript 和 Lint 都通过的情况下才跑测试
-    if (checks.every(c => c.passed)) {
+    // 测试运行只在显式要求时执行，并且前置检查通过后再跑
+    if (includeTests && checks.every(c => c.passed)) {
       const testCheck = await this.runTests();
       if (testCheck) checks.push(testCheck);
     }
@@ -168,6 +185,7 @@ export class Verifier {
       checks,
       allPassed: checks.every(c => c.passed),
       timestamp: new Date().toISOString(),
+      profile,
     };
   }
 }

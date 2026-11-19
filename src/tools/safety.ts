@@ -4,7 +4,7 @@
  */
 import { existsSync } from 'fs';
 import { resolve } from 'path';
-import type { LcCoderConfig } from '../config/index.js';
+import type { LccoderConfig } from '../config/index.js';
 
 /** 危险命令模式（正则） */
 const DANGEROUS_PATTERNS: { pattern: RegExp; reason: string }[] = [
@@ -40,7 +40,7 @@ export function isDangerousCommand(command: string): { dangerous: boolean; reaso
 export function requiresConfirmation(
   toolName: string,
   args: Record<string, unknown>,
-  config: LcCoderConfig,
+  config: LccoderConfig,
 ): { needsConfirm: boolean; reason?: string } {
   // shell_exec
   if (toolName === 'shell_exec') {

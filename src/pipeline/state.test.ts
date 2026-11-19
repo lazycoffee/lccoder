@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { createPipelineState, savePipelineState, loadPipelineState, clearPipelineState, type PipelineState } from './state.js';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { createPipelineState, savePipelineState, loadPipelineState, clearPipelineState } from './state.js';
 import type { DocumentStore } from '../documents/store.js';
 
 describe('pipeline state', () => {
@@ -8,6 +8,10 @@ describe('pipeline state', () => {
     loadPipelineState: vi.fn(),
     clearPipelineState: vi.fn(),
   } as unknown as DocumentStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   it('should create an initial pipeline state', () => {
     const input = 'some input';
@@ -28,7 +32,7 @@ describe('pipeline state', () => {
 
   it('should load pipeline state', async () => {
     const state = createPipelineState('test');
-    vi.mocked(mockStore.loadPipelineState).mockResolvedValueOnce(state);
+    mockStore.loadPipelineState = vi.fn().mockResolvedValueOnce(state) as any;
     const loaded = await loadPipelineState(mockStore);
     expect(mockStore.loadPipelineState).toHaveBeenCalled();
     expect(loaded).toBe(state);

@@ -1,13 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import { Verifier } from './verifier.js';
-
-// Move to top level
-vi.mock('fs', () => ({
-  existsSync: () => false,
-}));
-vi.mock('fs/promises', () => ({
-  readFile: async () => '{}',
-}));
 
 describe('Verifier', () => {
   let verifier: Verifier;
@@ -16,8 +10,15 @@ describe('Verifier', () => {
     verifier = new Verifier('/mock/dir');
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('detectProject', () => {
     it('should detect empty project properly', async () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+      vi.spyOn(fsPromises, 'readFile').mockResolvedValue('{}' as any);
+
       const info = await verifier.detectProject();
       expect(info.hasTsConfig).toBe(false);
       expect(info.hasEslint).toBe(false);
@@ -73,6 +74,47 @@ describe('Verifier', () => {
       expect(report.checks.length).toBe(1);
       expect(report.checks[0]?.name).toBe('测试运行');
       expect(runCheckSpy).toHaveBeenCalledWith('测试运行', 'bun test');
+    });
+
+    it('should skip tests when includeTests is false', async () => {
+      vi.spyOn(verifier, 'detectProject').mockResolvedValue({
+        hasTsConfig: false,
+        hasEslint: false,
+        hasTestScript: true,
+        packageManager: 'bun'
+      });
+
+      const runCheckSpy = vi.spyOn(verifier as any, 'runCheck').mockResolvedValue({
+        name: '测试运行',
+        passed: true,
+        output: 'passed',
+        durationMs: 100,
+      });
+
+      const report = await verifier.verify({ includeTests: false });
+
+      expect(report.checks.length).toBe(0);
+      expect(runCheckSpy).not.toHaveBeenCalled();
+    });
+
+    it('should preserve debug profile in verification report', async () => {
+      vi.spyOn(verifier, 'detectProject').mockResolvedValue({
+        hasTsConfig: false,
+        hasEslint: false,
+        hasTestScript: true,
+        packageManager: 'bun'
+      });
+
+      vi.spyOn(verifier as any, 'runCheck').mockResolvedValue({
+        name: '测试运行',
+        passed: true,
+        output: 'passed',
+        durationMs: 100,
+      });
+
+      const report = await verifier.verify({ includeTests: true, profile: 'debug' });
+
+      expect(report.profile).toBe('debug');
     });
   });
 });

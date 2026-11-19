@@ -12,7 +12,7 @@ export class ProductManager extends BaseRole {
     provider: LLMProvider,
     model: string,
     promptsDir?: string,
-    options?: { maxRetries?: number; onToolConfirm?: ToolConfirmCallback },
+    options?: { maxRetries?: number; onToolConfirm?: ToolConfirmCallback; workingDir?: string },
   ) {
     super({
       roleName: 'product-manager',
@@ -22,6 +22,7 @@ export class ProductManager extends BaseRole {
       promptsDir,
       maxRetries: options?.maxRetries,
       onToolConfirm: options?.onToolConfirm,
+      workingDir: options?.workingDir,
     });
   }
 

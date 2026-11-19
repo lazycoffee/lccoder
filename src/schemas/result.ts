@@ -19,6 +19,28 @@ export const ResultSchema = z.object({
 
 export type Result = z.infer<typeof ResultSchema>;
 
+/** QA 测试报告 */
+export const QaReportSchema = z.object({
+  task_id: z.string().describe('对应的任务 ID'),
+  tested_by: z.literal('qa-engineer'),
+  timestamp: z.string(),
+  requirement_coverage: z.object({
+    passed: z.boolean(),
+    score: z.number().int().min(1).max(10),
+    notes: z.array(z.string()),
+  }),
+  artifact_validation: z.object({
+    passed: z.boolean(),
+    notes: z.array(z.string()),
+  }),
+  quality_risks: z.array(z.string()).describe('发现的质量风险'),
+  verdict: z.enum(['pass', 'pass-with-risks', 'fail']),
+  reason: z.string(),
+  suggestions: z.array(z.string()),
+});
+
+export type QaReport = z.infer<typeof QaReportSchema>;
+
 /** 评估结论 */
 export const EvaluationSchema = z.object({
   task_id: z.string().describe('被评估的任务 ID'),

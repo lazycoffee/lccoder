@@ -4,11 +4,13 @@
  */
 import type { Requirement } from '../schemas/requirement.js';
 import type { Plan } from '../schemas/plan.js';
+import type { BugReport } from '../schemas/bug-report.js';
 import type { DispatchResult } from './dispatcher.js';
 import { DocumentStore } from '../documents/store.js';
+import type { RoutingDecision, PipelineType, RequestMode } from '../schemas/route.js';
 
 /** 流水线执行阶段 */
-export type PipelineStage = 'classify' | 'pm' | 'pjm' | 'dispatch' | 'summary' | 'done';
+export type PipelineStage = 'classify' | 'pm' | 'triage' | 'pjm' | 'dispatch' | 'summary' | 'done';
 
 /** 流水线状态快照 */
 export interface PipelineState {
@@ -22,12 +24,14 @@ export interface PipelineState {
   savedAt: string;
   /** 当前阶段 */
   currentStage: PipelineStage;
+  /** 请求模式 */
+  requestMode?: RequestMode;
+  /** 流水线类型 */
+  pipelineType?: PipelineType;
 
   // 各阶段的输出（逐步填充）
-  classification?: {
-    complexity: string;
-    reason: string;
-  };
+  classification?: RoutingDecision;
+  bugReport?: BugReport;
   requirement?: Requirement;
   plan?: Plan;
   completedResults: DispatchResult[];

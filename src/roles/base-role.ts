@@ -39,6 +39,7 @@ export abstract class BaseRole {
   protected promptsDir: string;
   protected maxRetries: number;
   protected onToolConfirm?: ToolConfirmCallback;
+  protected workingDir?: string;
 
   constructor(params: {
     roleName: RoleName;
@@ -48,6 +49,7 @@ export abstract class BaseRole {
     promptsDir?: string;
     maxRetries?: number;
     onToolConfirm?: ToolConfirmCallback;
+    workingDir?: string;
   }) {
     this.roleName = params.roleName;
     this.promptFileName = params.promptFileName;
@@ -58,6 +60,7 @@ export abstract class BaseRole {
     this.promptsDir = params.promptsDir || join(import.meta.dir, '../../prompts');
     this.maxRetries = params.maxRetries ?? 2;
     this.onToolConfirm = params.onToolConfirm;
+    this.workingDir = params.workingDir;
   }
 
   /** 加载角色的 System Prompt */
@@ -76,7 +79,7 @@ export abstract class BaseRole {
   async execute(input: RoleInput): Promise<RoleOutput> {
     const systemPrompt = await this.loadPrompt();
     const tools = getToolDefinitions(this.roleName);
-    const executors = getToolExecutors(this.roleName);
+    const executors = getToolExecutors(this.roleName, this.workingDir);
 
     const sessionId = `${this.roleName}-${Date.now()}`;
     const session = new Session(
@@ -155,4 +158,3 @@ export abstract class BaseRole {
     return null;
   }
 }
-

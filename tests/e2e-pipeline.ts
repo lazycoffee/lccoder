@@ -11,7 +11,10 @@ import { Clerk } from '../src/roles/clerk.js';
 import { Evaluator } from '../src/roles/evaluator.js';
 import { DocumentStore } from '../src/documents/store.js';
 import { DEFAULT_CONFIG } from '../src/config/index.js';
+import { extractProjectContext, formatContextForPrompt } from '../src/pipeline/context.js';
 import { join } from 'path';
+import { mkdtemp, mkdir, readFile, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
 
 const MODEL = DEFAULT_CONFIG.model;
 const HOST = DEFAULT_CONFIG.ollamaHost;
@@ -42,7 +45,7 @@ function detail(msg: string) {
 }
 
 async function main() {
-  console.log(`\n${BOLD}${CYAN}LC-Coder 端到端流水线测试${RESET}`);
+  console.log(`\n${BOLD}${CYAN}lccoder 端到端流水线测试${RESET}`);
   console.log(`${DIM}模型: ${MODEL} | 地址: ${HOST}${RESET}\n`);
 
   const provider = new OllamaProvider(HOST);
@@ -81,10 +84,10 @@ async function main() {
   detail(`分类结果: ${JSON.stringify(simpleResult)}`);
   detail(`耗时: ${t2Time}ms`);
 
-  if (simpleResult.complexity === 'simple') {
+  if (simpleResult.decision.complexity === 'simple') {
     pass('正确分类为 simple');
   } else {
-    warn(`分类为 ${simpleResult.complexity}，期望 simple`);
+    warn(`分类为 ${simpleResult.decision.complexity}，期望 simple`);
   }
 
   // ============================================
@@ -101,10 +104,10 @@ async function main() {
   detail(`分类结果: ${JSON.stringify(complexResult)}`);
   detail(`耗时: ${t3Time}ms`);
 
-  if (complexResult.complexity === 'complex') {
+  if (complexResult.decision.complexity === 'complex') {
     pass('正确分类为 complex');
   } else {
-    warn(`分类为 ${complexResult.complexity}，期望 complex`);
+    warn(`分类为 ${complexResult.decision.complexity}，期望 complex`);
   }
 
   // ============================================
@@ -301,11 +304,170 @@ export function add(a: number, b: number): number {
   }
 
   // ============================================
+  // 测试 8: 多文件任务 + workingDir 隔离
+  // ============================================
+  section('测试 8: 多文件任务 + workingDir 隔离');
+
+  const fixtureDir = await mkdtemp(join(tmpdir(), 'lccoder-e2e-'));
+  await mkdir(join(fixtureDir, 'src'), { recursive: true });
+  await writeFile(
+    join(fixtureDir, 'package.json'),
+    JSON.stringify({
+      name: 'e2e-fixture',
+      version: '1.0.0',
+      type: 'module',
+      scripts: {
+        test: 'echo "no tests"',
+      },
+      dependencies: {},
+      devDependencies: {
+        typescript: '^5.0.0',
+      },
+    }, null, 2),
+    'utf-8',
+  );
+  await writeFile(
+    join(fixtureDir, 'src/index.ts'),
+    `export const version = '1.0.0';\n`,
+    'utf-8',
+  );
+
+  const fixtureContext = await extractProjectContext(fixtureDir);
+  const fixturePrompt = formatContextForPrompt(fixtureContext);
+
+  const multiFileInstruction = {
+    task_id: 'task-test-002',
+    type: 'modify' as const,
+    title: '为独立项目添加 math 模块并在 index 中导出',
+    instructions: `${fixturePrompt}
+
+请在当前项目中完成以下修改：
+1. 创建 src/math.ts，导出 multiply(a: number, b: number): number
+2. 修改 src/index.ts，保留现有导出，并新增导出 "./math"
+3. 优先使用 file_read、file_write、file_patch、grep_search 工具完成
+
+完成后输出标准 JSON 结果。`,
+    input_files: ['package.json', 'src/index.ts'],
+    output_files: ['src/index.ts', 'src/math.ts'],
+    verification: 'src/math.ts 存在，且 src/index.ts 包含 export * from "./math";',
+  };
+
+  const scopedClerk = new Clerk(provider, MODEL, PROMPTS_DIR, { workingDir: fixtureDir });
+  const t8Start = Date.now();
+  const multiFileResult = await scopedClerk.executeTask(multiFileInstruction);
+  const t8Time = Date.now() - t8Start;
+
+  detail(`耗时: ${t8Time}ms`);
+  detail(`工作目录: ${fixtureDir}`);
+
+  if (multiFileResult.result) {
+    detail(`状态: ${multiFileResult.result.status}`);
+    detail(`概要: ${multiFileResult.result.output_summary}`);
+    await store.saveDocument('test-result-workingdir', multiFileResult.result);
+  } else {
+    warn('多文件任务未返回标准结果报告');
+    detail(`原始文本: ${multiFileResult.text.slice(0, 500)}`);
+  }
+
+  try {
+    const mathFile = await readFile(join(fixtureDir, 'src/math.ts'), 'utf-8');
+    const indexFile = await readFile(join(fixtureDir, 'src/index.ts'), 'utf-8');
+    if (mathFile.includes('multiply') && indexFile.includes('export * from \'./math\'')) {
+      pass('workingDir 验证成功: 多文件修改发生在独立项目目录中');
+      detail(`src/math.ts:\n${mathFile}`);
+      detail(`src/index.ts:\n${indexFile}`);
+    } else if (mathFile.includes('multiply') && indexFile.includes('export * from "./math"')) {
+      pass('workingDir 验证成功: 多文件修改发生在独立项目目录中');
+      detail(`src/math.ts:\n${mathFile}`);
+      detail(`src/index.ts:\n${indexFile}`);
+    } else {
+      warn('fixture 目录中的文件已修改，但结果与预期不完全一致');
+      detail(`src/math.ts:\n${mathFile}`);
+      detail(`src/index.ts:\n${indexFile}`);
+    }
+  } catch (err: any) {
+    fail(`workingDir 验证失败: ${err.message}`);
+  }
+
+  // ============================================
+  // 测试 9: 读取现有代码后再修改
+  // ============================================
+  section('测试 9: 读取现有代码后再修改');
+
+  await writeFile(
+    join(fixtureDir, 'src/counter.ts'),
+    [
+      'export function increment(value: number): number {',
+      '  return value + 1;',
+      '}',
+      '',
+      'export function decrement(value: number): number {',
+      '  return value - 1;',
+      '}',
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+
+  const readThenModifyInstruction = {
+    task_id: 'task-test-003',
+    type: 'modify' as const,
+    title: '读取 counter 模块并补充 reset 导出',
+    instructions: `${fixturePrompt}
+
+请先读取 src/counter.ts 的现有实现，再完成以下修改：
+1. 保留 increment 和 decrement 的现有逻辑
+2. 在同一文件中新增 reset(): number，返回 0
+3. 为每个导出函数补充一行简短注释
+4. 如果前面步骤已经创建了 src/math.ts，不要破坏它
+
+完成后输出标准 JSON 结果。`,
+    input_files: ['src/counter.ts'],
+    output_files: ['src/counter.ts'],
+    verification: 'src/counter.ts 仍包含 increment/decrement，且新增 reset(): number',
+  };
+
+  const t9Start = Date.now();
+  const readThenModifyResult = await scopedClerk.executeTask(readThenModifyInstruction);
+  const t9Time = Date.now() - t9Start;
+
+  detail(`耗时: ${t9Time}ms`);
+
+  if (readThenModifyResult.result) {
+    detail(`状态: ${readThenModifyResult.result.status}`);
+    detail(`概要: ${readThenModifyResult.result.output_summary}`);
+    await store.saveDocument('test-result-read-modify', readThenModifyResult.result);
+  } else {
+    warn('读取后修改任务未返回标准结果报告');
+    detail(`原始文本: ${readThenModifyResult.text.slice(0, 500)}`);
+  }
+
+  try {
+    const counterFile = await readFile(join(fixtureDir, 'src/counter.ts'), 'utf-8');
+    const hasOriginalLogic =
+      counterFile.includes('return value + 1;') &&
+      counterFile.includes('return value - 1;');
+    const hasReset =
+      counterFile.includes('export function reset(): number') &&
+      counterFile.includes('return 0;');
+
+    if (hasOriginalLogic && hasReset) {
+      pass('读取后修改验证成功: 保留原逻辑并新增 reset 导出');
+      detail(`src/counter.ts:\n${counterFile}`);
+    } else {
+      warn('counter.ts 已修改，但未完全满足预期');
+      detail(`src/counter.ts:\n${counterFile}`);
+    }
+  } catch (err: any) {
+    fail(`读取后修改验证失败: ${err.message}`);
+  }
+
+  // ============================================
   // 总结
   // ============================================
   section('测试总结');
   console.log('');
-  info('所有测试文档已保存到 .lc-coder/documents/ 目录');
+  info('所有测试文档已保存到 .lccoder/documents/ 目录');
   info('你可以检查这些 JSON 文件来评估模型的输出质量');
   console.log('');
 }

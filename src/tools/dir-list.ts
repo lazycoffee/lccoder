@@ -29,10 +29,11 @@ export const dirListTool: ToolDefinition = {
 
 export async function dirListExecutor(
   args: Record<string, unknown>,
+  workingDir: string = process.cwd(),
 ): Promise<unknown> {
   const path = String(args.path || '.');
   const recursive = String(args.recursive) === 'true';
-  const fullPath = resolve(process.cwd(), path);
+  const fullPath = resolve(workingDir, path);
 
   try {
     const entries = await listDir(fullPath, recursive, '', 0);
@@ -59,7 +60,7 @@ async function listDir(
 
   for (const entry of entries) {
     // 跳过常见的不需要列出的目录
-    if (['node_modules', '.git', '.lc-coder', 'dist', '.next'].includes(entry)) continue;
+    if (['node_modules', '.git', '.lccoder', 'dist', '.next'].includes(entry)) continue;
 
     const fullPath = join(dir, entry);
     const stats = await stat(fullPath);

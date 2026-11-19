@@ -6,16 +6,20 @@ import { classifyRequest } from './classifier.js';
 import { Dispatcher, type DispatchResult } from './dispatcher.js';
 import { ProductManager } from '../roles/product-manager.js';
 import { ProjectManager } from '../roles/project-manager.js';
+import { DirectAnswerRole } from '../roles/direct-answer.js';
+import { BugTriage } from '../roles/bug-triage.js';
 import { DocumentStore } from '../documents/store.js';
-import type { ProviderFactory } from '../llm/factory.js';
-import type { LcCoderConfig } from '../config/index.js';
+import type { ProviderResolver } from '../llm/factory.js';
+import type { LccoderConfig } from '../config/index.js';
 import { getModelForRole } from '../config/index.js';
 import { extractProjectContext, formatContextForPrompt } from './context.js';
 import type { Requirement } from '../schemas/requirement.js';
 import type { Plan } from '../schemas/plan.js';
+import type { BugReport } from '../schemas/bug-report.js';
 import type { Summary } from '../schemas/result.js';
 import type { ToolConfirmCallback } from '../roles/base-role.js';
 import type { VerificationReport } from './verifier.js';
+import type { RequestedMode } from '../schemas/route.js';
 import {
   type PipelineState,
   createPipelineState,
@@ -44,15 +48,15 @@ export interface PipelineCallbacks {
 }
 
 export class Orchestrator {
-  private factory: ProviderFactory;
-  private config: LcCoderConfig;
+  private factory: ProviderResolver;
+  private config: LccoderConfig;
   private store: DocumentStore;
   private callbacks: PipelineCallbacks;
   private promptsDir?: string;
 
   constructor(params: {
-    factory: ProviderFactory;
-    config: LcCoderConfig;
+    factory: ProviderResolver;
+    config: LccoderConfig;
     store: DocumentStore;
     callbacks: PipelineCallbacks;
     promptsDir?: string;
@@ -82,7 +86,7 @@ export class Orchestrator {
   /**
    * 运行完整的流水线
    */
-  async run(userInput: string): Promise<void> {
+  async run(userInput: string, requestedMode: RequestedMode = 'auto'): Promise<void> {
     await this.store.init();
 
     // 自动提取项目上下文
@@ -101,45 +105,139 @@ export class Orchestrator {
       this.factory.getProviderForRole('classifier'),
       getModelForRole(this.config, 'classifier'),
       this.promptsDir,
+      requestedMode,
     );
     if (classification.sessionRecord) {
       await this.store.saveSession(classification.sessionRecord);
     }
-    state.classification = classification;
-    state.currentStage = 'pm';
+    state.classification = classification.decision;
+    state.requestMode = classification.decision.mode;
+    state.pipelineType = classification.decision.pipelineType;
+    state.currentStage = classification.decision.pipelineType === 'debug-pipeline' ? 'triage' : 'pm';
     await savePipelineState(state, this.store);
     this.callbacks.onStageComplete('classifier', Date.now() - stageStart);
 
-    if (classification.complexity === 'simple') {
-      // 简单请求：直接用模型回答
-      this.callbacks.onStageStart('direct-answer', '正在回答...');
-      const pmStart = Date.now();
-      const pm = new ProductManager(
-        this.factory.getProviderForRole('product-manager'),
-        getModelForRole(this.config, 'product-manager'),
-        this.promptsDir,
-      );
-      const answer = await pm.execute({ userMessage: userInput });
-      if (answer.sessionRecord) {
-        await this.store.saveSession(answer.sessionRecord);
-      }
-      this.callbacks.onSimpleResponse(answer.text);
-      this.callbacks.onStageComplete('direct-answer', Date.now() - pmStart);
-      await clearPipelineState(this.store);
+    const onToolConfirm = this.buildToolConfirm();
+
+    switch (classification.decision.pipelineType) {
+      case 'direct-answer':
+        await this.runDirectAnswer(userInput);
+        break;
+      case 'debug-pipeline':
+        await this.runDebugPipeline(userInput, state, contextPrompt, onToolConfirm);
+        break;
+      case 'coding-pipeline':
+      default:
+        await this.runCodingPipeline(userInput, state, contextPrompt, onToolConfirm);
+        break;
+    }
+
+    await clearPipelineState(this.store);
+  }
+
+  private async runDirectAnswer(userInput: string): Promise<void> {
+    this.callbacks.onStageStart('direct-answer', '正在回答...');
+    const answerStart = Date.now();
+    const assistant = new DirectAnswerRole(
+      this.factory.getProviderForRole('direct-answer'),
+      getModelForRole(this.config, 'direct-answer'),
+      this.promptsDir,
+      { workingDir: this.config.safety.workingDir },
+    );
+    const answer = await assistant.execute({ userMessage: userInput });
+    if (answer.sessionRecord) {
+      await this.store.saveSession(answer.sessionRecord);
+    }
+    this.callbacks.onSimpleResponse(answer.text);
+    this.callbacks.onStageComplete('direct-answer', Date.now() - answerStart);
+  }
+
+  private async runCodingPipeline(
+    userInput: string,
+    state: PipelineState,
+    contextPrompt: string,
+    onToolConfirm?: ToolConfirmCallback,
+  ): Promise<void> {
+    const requirement = await this.runRequirementStage(userInput, contextPrompt, onToolConfirm);
+    if (!requirement) return;
+
+    state.requirement = requirement;
+    state.currentStage = 'pjm';
+    await savePipelineState(state, this.store);
+
+    const requirementApproved = await this.callbacks.onRequirementReview(requirement);
+    if (!requirementApproved) {
+      this.callbacks.onError('用户取消了需求。');
       return;
     }
 
-    // ==========================================
-    // Step 1: 产品经理 — 需求分析
-    // ==========================================
+    const plan = await this.runProjectPlanStage(requirement, contextPrompt, onToolConfirm);
+    if (!plan) return;
+
+    state.plan = plan;
+    state.currentStage = 'dispatch';
+    await savePipelineState(state, this.store);
+
+    const planApproved = await this.callbacks.onPlanReview(plan);
+    if (!planApproved) {
+      this.callbacks.onError('用户取消了工作计划。');
+      return;
+    }
+
+    await this.executeTasks(state, onToolConfirm);
+  }
+
+  private async runDebugPipeline(
+    userInput: string,
+    state: PipelineState,
+    contextPrompt: string,
+    onToolConfirm?: ToolConfirmCallback,
+  ): Promise<void> {
+    const bugReport = await this.runBugTriageStage(userInput, contextPrompt, onToolConfirm);
+    if (!bugReport) return;
+
+    state.bugReport = bugReport;
+    state.currentStage = 'pjm';
+    await savePipelineState(state, this.store);
+
+    const bugReportApproved = await this.callbacks.onRequirementReview(this.bugReportAsRequirement(bugReport));
+    if (!bugReportApproved) {
+      this.callbacks.onError('用户取消了 bug 报告。');
+      return;
+    }
+
+    const plan = await this.runDebugPlanStage(bugReport, contextPrompt, onToolConfirm);
+    if (!plan) return;
+
+    state.plan = plan;
+    state.currentStage = 'dispatch';
+    await savePipelineState(state, this.store);
+
+    const planApproved = await this.callbacks.onPlanReview(plan);
+    if (!planApproved) {
+      this.callbacks.onError('用户取消了修复计划。');
+      return;
+    }
+
+    await this.executeTasks(state, onToolConfirm);
+  }
+
+  private async runRequirementStage(
+    userInput: string,
+    contextPrompt: string,
+    onToolConfirm?: ToolConfirmCallback,
+  ): Promise<Requirement | null> {
     const pmStart = Date.now();
     this.callbacks.onStageStart('product-manager', '产品经理正在分析需求...');
-    const onToolConfirm = this.buildToolConfirm();
     const pm = new ProductManager(
       this.factory.getProviderForRole('product-manager'),
       getModelForRole(this.config, 'product-manager'),
       this.promptsDir,
-      { maxRetries: this.config.execution.maxRetries, onToolConfirm },
+      {
+        maxRetries: this.config.execution.maxRetries,
+        onToolConfirm,
+        workingDir: this.config.safety.workingDir,
+      },
     );
     let pmResult = await pm.analyze(`${contextPrompt}\n\n用户的需求如下：\n\n${userInput}`);
     if (pmResult.sessionRecord) {
@@ -147,16 +245,11 @@ export class Orchestrator {
     }
     this.callbacks.onStageComplete('product-manager', Date.now() - pmStart);
 
-    // 处理追问
     if (pmResult.questions && pmResult.questions.length > 0) {
       const answers = await this.callbacks.onQuestion(pmResult.questions);
       const refineStart = Date.now();
       this.callbacks.onStageStart('product-manager', '正在完善需求分析...');
-      pmResult = await pm.refineWithAnswers(
-        userInput,
-        pmResult.document || {},
-        answers,
-      );
+      pmResult = await pm.refineWithAnswers(userInput, pmResult.document || {}, answers);
       if (pmResult.sessionRecord) {
         await this.store.saveSession(pmResult.sessionRecord);
       }
@@ -165,35 +258,54 @@ export class Orchestrator {
 
     if (!pmResult.requirement) {
       this.callbacks.onError('产品经理未能生成有效的需求分析报告。');
-      return;
+      return null;
     }
 
-    // 保存需求文档 & 状态
     await this.store.saveDocument(`requirement-${pmResult.requirement.id}`, pmResult.requirement);
-    state.requirement = pmResult.requirement;
-    state.currentStage = 'pjm';
-    await savePipelineState(state, this.store);
+    return pmResult.requirement;
+  }
 
-    // 用户确认需求
-    const requirementApproved = await this.callbacks.onRequirementReview(pmResult.requirement);
-    if (!requirementApproved) {
-      this.callbacks.onError('用户取消了需求。');
-      await clearPipelineState(this.store);
-      return;
+  private async runBugTriageStage(
+    userInput: string,
+    contextPrompt: string,
+    onToolConfirm?: ToolConfirmCallback,
+  ): Promise<BugReport | null> {
+    const triageStart = Date.now();
+    this.callbacks.onStageStart('bug-triage', '正在分诊问题并生成 bug 报告...');
+    const triage = new BugTriage(
+      this.factory.getProviderForRole('bug-triage'),
+      getModelForRole(this.config, 'bug-triage'),
+      this.promptsDir,
+      {
+        maxRetries: this.config.execution.maxRetries,
+        onToolConfirm,
+        workingDir: this.config.safety.workingDir,
+      },
+    );
+    const triageResult = await triage.analyze(`${contextPrompt}\n\n用户描述的问题如下：\n\n${userInput}`);
+    if (triageResult.sessionRecord) {
+      await this.store.saveSession(triageResult.sessionRecord);
+    }
+    this.callbacks.onStageComplete('bug-triage', Date.now() - triageStart);
+
+    if (!triageResult.bugReport) {
+      this.callbacks.onError('bug-triage 未能生成有效的 bug 报告。');
+      return null;
     }
 
-    // ==========================================
-    // Step 2: 项目经理 — 任务拆分
-    // ==========================================
+    await this.store.saveDocument(`bug-report-${triageResult.bugReport.id}`, triageResult.bugReport);
+    return triageResult.bugReport;
+  }
+
+  private async runProjectPlanStage(
+    requirement: Requirement,
+    contextPrompt: string,
+    onToolConfirm?: ToolConfirmCallback,
+  ): Promise<Plan | null> {
     const pjmStart = Date.now();
     this.callbacks.onStageStart('project-manager', '项目经理正在拆分任务...');
-    const pjm = new ProjectManager(
-      this.factory.getProviderForRole('project-manager'),
-      getModelForRole(this.config, 'project-manager'),
-      this.promptsDir,
-      { maxRetries: this.config.execution.maxRetries, onToolConfirm },
-    );
-    const pjmResult = await pjm.createPlan(pmResult.requirement, contextPrompt);
+    const pjm = this.createProjectManager(onToolConfirm);
+    const pjmResult = await pjm.createPlan(requirement, contextPrompt);
     if (pjmResult.sessionRecord) {
       await this.store.saveSession(pjmResult.sessionRecord);
     }
@@ -201,30 +313,75 @@ export class Orchestrator {
 
     if (!pjmResult.plan) {
       this.callbacks.onError('项目经理未能生成有效的工作计划。');
-      return;
+      return null;
     }
 
-    // 保存计划文档 & 状态
     await this.store.saveDocument(`plan-${pjmResult.plan.id}`, pjmResult.plan);
-    state.plan = pjmResult.plan;
-    state.currentStage = 'dispatch';
-    await savePipelineState(state, this.store);
+    return pjmResult.plan;
+  }
 
-    // 用户确认计划
-    const planApproved = await this.callbacks.onPlanReview(pjmResult.plan);
-    if (!planApproved) {
-      this.callbacks.onError('用户取消了工作计划。');
-      await clearPipelineState(this.store);
-      return;
+  private async runDebugPlanStage(
+    bugReport: BugReport,
+    contextPrompt: string,
+    onToolConfirm?: ToolConfirmCallback,
+  ): Promise<Plan | null> {
+    const pjmStart = Date.now();
+    this.callbacks.onStageStart('project-manager', '项目经理正在制定修复计划...');
+    const pjm = this.createProjectManager(onToolConfirm, 'debug-project-manager.md');
+    const pjmResult = await pjm.createDebugPlan(bugReport, contextPrompt);
+    if (pjmResult.sessionRecord) {
+      await this.store.saveSession(pjmResult.sessionRecord);
+    }
+    this.callbacks.onStageComplete('project-manager', Date.now() - pjmStart);
+
+    if (!pjmResult.plan) {
+      this.callbacks.onError('项目经理未能生成有效的修复计划。');
+      return null;
     }
 
-    // ==========================================
-    // Step 3+4: 分发任务 + 评估结果
-    // ==========================================
-    await this.executeTasks(state, onToolConfirm);
+    await this.store.saveDocument(`plan-${pjmResult.plan.id}`, pjmResult.plan);
+    return pjmResult.plan;
+  }
 
-    // 清除状态
-    await clearPipelineState(this.store);
+  private createProjectManager(
+    onToolConfirm?: ToolConfirmCallback,
+    promptFileName?: string,
+  ): ProjectManager {
+    return new ProjectManager(
+      this.factory.getProviderForRole('project-manager'),
+      getModelForRole(this.config, 'project-manager'),
+      this.promptsDir,
+      {
+        maxRetries: this.config.execution.maxRetries,
+        onToolConfirm,
+        workingDir: this.config.safety.workingDir,
+        promptFileName,
+      },
+    );
+  }
+
+  private bugReportAsRequirement(bugReport: BugReport): Requirement {
+    return {
+      id: bugReport.id,
+      version: '1.0',
+      created_by: 'product-manager',
+      timestamp: bugReport.timestamp,
+      project_context: {
+        tech_stack: [],
+        key_files: bugReport.suspected_scope,
+        framework: undefined,
+        project_type: 'debug-task',
+      },
+      requirement: {
+        user_input: bugReport.user_input,
+        summary: bugReport.observed_behavior,
+        detailed_description: `${bugReport.observed_behavior}\n\n预期行为：${bugReport.expected_behavior}`,
+        goals: bugReport.acceptance_criteria,
+        non_goals: [],
+        acceptance_criteria: bugReport.acceptance_criteria,
+      },
+      clarifications: [],
+    };
   }
 
   /**
@@ -242,38 +399,27 @@ export class Orchestrator {
     switch (state.currentStage) {
       case 'classify':
       case 'pm':
+      case 'triage':
         // 需要重新开始
         return this.run(state.userInput);
 
       case 'pjm': {
-        // 有需求但没计划，从项目经理开始
-        if (!state.requirement) return this.run(state.userInput);
+        let plan: Plan | null = null;
 
-        const pjmStart = Date.now();
-        this.callbacks.onStageStart('project-manager', '项目经理正在拆分任务（恢复中）...');
-        const pjm = new ProjectManager(
-          this.factory.getProviderForRole('project-manager'),
-          getModelForRole(this.config, 'project-manager'),
-          this.promptsDir,
-          { maxRetries: this.config.execution.maxRetries, onToolConfirm },
-        );
-        const pjmResult = await pjm.createPlan(state.requirement, contextPrompt);
-        if (pjmResult.sessionRecord) {
-          await this.store.saveSession(pjmResult.sessionRecord);
-        }
-        this.callbacks.onStageComplete('project-manager', Date.now() - pjmStart);
-
-        if (!pjmResult.plan) {
-          this.callbacks.onError('项目经理未能生成有效的工作计划。');
-          return;
+        if (state.pipelineType === 'debug-pipeline' && state.bugReport) {
+          plan = await this.runDebugPlanStage(state.bugReport, contextPrompt, onToolConfirm);
+        } else if (state.requirement) {
+          plan = await this.runProjectPlanStage(state.requirement, contextPrompt, onToolConfirm);
+        } else {
+          return this.run(state.userInput);
         }
 
-        await this.store.saveDocument(`plan-${pjmResult.plan.id}`, pjmResult.plan);
-        state.plan = pjmResult.plan;
+        if (!plan) return;
+        state.plan = plan;
 
-        const planApproved = await this.callbacks.onPlanReview(pjmResult.plan);
+        const planApproved = await this.callbacks.onPlanReview(plan);
         if (!planApproved) {
-          this.callbacks.onError('用户取消了工作计划。');
+          this.callbacks.onError(state.pipelineType === 'debug-pipeline' ? '用户取消了修复计划。' : '用户取消了工作计划。');
           await clearPipelineState(this.store);
           return;
         }
@@ -310,14 +456,17 @@ export class Orchestrator {
     const plan = state.plan!;
     const dispatcher = new Dispatcher({
       clerkProvider: this.factory.getProviderForRole('clerk'),
+      qaProvider: this.factory.getProviderForRole('qa-engineer'),
       evaluatorProvider: this.factory.getProviderForRole('evaluator'),
       clerkModel: getModelForRole(this.config, 'clerk'),
+      qaModel: getModelForRole(this.config, 'qa-engineer'),
       evaluatorModel: getModelForRole(this.config, 'evaluator'),
       promptsDir: this.promptsDir,
       maxRetries: this.config.execution.maxRetries,
       onToolConfirm,
       enableVerification: true,
       workingDir: this.config.safety.workingDir,
+      verificationProfile: state.pipelineType === 'debug-pipeline' ? 'debug' : 'coding',
     });
 
     const results: DispatchResult[] = [...state.completedResults];
@@ -369,6 +518,7 @@ export class Orchestrator {
               changes_made: [],
               output_summary: '跳过',
             },
+            qaReport: null,
             evaluation: null,
             verification: null,
           };
@@ -407,6 +557,7 @@ export class Orchestrator {
                 changes_made: [],
                 output_summary: '依赖任务失败，跳过',
               },
+              qaReport: null,
               evaluation: null,
               verification: null,
             };
@@ -430,6 +581,9 @@ export class Orchestrator {
           if (dispatchResult.clerkSession) {
             await this.store.saveSession(dispatchResult.clerkSession);
           }
+          if (dispatchResult.qaSession) {
+            await this.store.saveSession(dispatchResult.qaSession);
+          }
           if (dispatchResult.evaluatorSession) {
             await this.store.saveSession(dispatchResult.evaluatorSession);
           }
@@ -439,6 +593,9 @@ export class Orchestrator {
 
           if (dispatchResult.evaluation) {
             await this.store.saveDocument(`evaluation-${task.id}`, dispatchResult.evaluation);
+          }
+          if (dispatchResult.qaReport) {
+            await this.store.saveDocument(`qa-report-${task.id}`, dispatchResult.qaReport);
           }
 
           results.push(dispatchResult);

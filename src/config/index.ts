@@ -4,25 +4,28 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 
-export interface LcCoderConfig {
-  /** LLM 提供商 (ollama, openai) */
-  provider?: 'ollama' | 'openai';
+export interface LccoderConfig {
+  /** LLM 提供商 */
+  provider?: 'ollama' | 'minimax';
   /** 默认模型 */
   model: string;
   /** Ollama 地址 */
   ollamaHost: string;
-  /** OpenAI 兼容配置 (如 Minimax, DeepSeek) */
-  openai?: {
+  /** MiniMax 配置 */
+  minimax?: {
     apiKey: string;
     baseURL?: string;
   };
   /** 每个角色可单独配模型 */
   roles: {
-    classifier?: { model?: string; provider?: 'ollama' | 'openai' };
-    'product-manager'?: { model?: string; provider?: 'ollama' | 'openai' };
-    'project-manager'?: { model?: string; provider?: 'ollama' | 'openai' };
-    clerk?: { model?: string; provider?: 'ollama' | 'openai' };
-    evaluator?: { model?: string; provider?: 'ollama' | 'openai' };
+    classifier?: { model?: string; provider?: 'ollama' | 'minimax' };
+    'direct-answer'?: { model?: string; provider?: 'ollama' | 'minimax' };
+    'bug-triage'?: { model?: string; provider?: 'ollama' | 'minimax' };
+    'product-manager'?: { model?: string; provider?: 'ollama' | 'minimax' };
+    'project-manager'?: { model?: string; provider?: 'ollama' | 'minimax' };
+    clerk?: { model?: string; provider?: 'ollama' | 'minimax' };
+    'qa-engineer'?: { model?: string; provider?: 'ollama' | 'minimax' };
+    evaluator?: { model?: string; provider?: 'ollama' | 'minimax' };
   };
   /** 执行设置 */
   execution: {
@@ -39,7 +42,7 @@ export interface LcCoderConfig {
 }
 
 /** 默认配置 */
-export const DEFAULT_CONFIG: LcCoderConfig = {
+export const DEFAULT_CONFIG: LccoderConfig = {
   provider: 'ollama',
   model: 'gemma4:latest',
   ollamaHost: 'http://192.168.68.210:11434',
@@ -57,13 +60,13 @@ export const DEFAULT_CONFIG: LcCoderConfig = {
 };
 
 /**
- * 加载配置：项目级 .lc-coder/config.json > 默认配置
+ * 加载配置：项目级 .lccoder/config.json > 默认配置
  */
-export function loadConfig(workingDir?: string): LcCoderConfig {
+export function loadConfig(workingDir?: string): LccoderConfig {
   const cwd = workingDir || process.cwd();
-  const configPath = join(cwd, '.lc-coder', 'config.json');
+  const configPath = join(cwd, '.lccoder', 'config.json');
 
-  let projectConfig: Partial<LcCoderConfig> = {};
+  let projectConfig: Partial<LccoderConfig> = {};
   if (existsSync(configPath)) {
     try {
       const raw = require(configPath);
@@ -73,15 +76,18 @@ export function loadConfig(workingDir?: string): LcCoderConfig {
     }
   }
 
-  const merged = deepMerge(DEFAULT_CONFIG, projectConfig) as LcCoderConfig;
+  const merged = deepMerge(DEFAULT_CONFIG, projectConfig) as LccoderConfig;
 
-  // 尝试从环境变量读取 API Key
-  if (merged.provider === 'openai') {
-    if (!merged.openai) {
-      merged.openai = { apiKey: '' };
+  // 尝试从环境变量读取 MiniMax API Key
+  if (merged.provider === 'minimax') {
+    if (!merged.minimax) {
+      merged.minimax = { apiKey: '', baseURL: 'https://api.minimaxi.com/v1' };
     }
-    if (!merged.openai.apiKey) {
-      merged.openai.apiKey = process.env.OPENAI_API_KEY || process.env.MINIMAX_API_KEY || '';
+    if (!merged.minimax.baseURL) {
+      merged.minimax.baseURL = 'https://api.minimaxi.com/v1';
+    }
+    if (!merged.minimax.apiKey) {
+      merged.minimax.apiKey = process.env.MINIMAX_API_KEY || '';
     }
   }
 
@@ -91,7 +97,7 @@ export function loadConfig(workingDir?: string): LcCoderConfig {
 /**
  * 获取角色使用的模型
  */
-export function getModelForRole(config: LcCoderConfig, role: string): string {
+export function getModelForRole(config: LccoderConfig, role: string): string {
   const roleConfig = (config.roles as any)[role];
   return roleConfig?.model || config.model;
 }
@@ -99,7 +105,7 @@ export function getModelForRole(config: LcCoderConfig, role: string): string {
 /**
  * 获取角色使用的 LLM 提供商
  */
-export function getProviderForRole(config: LcCoderConfig, role: string): 'ollama' | 'openai' {
+export function getProviderForRole(config: LccoderConfig, role: string): 'ollama' | 'minimax' {
   const roleConfig = (config.roles as any)[role];
   return roleConfig?.provider || config.provider || 'ollama';
 }

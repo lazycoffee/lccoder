@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { extractProjectContext, formatContextForPrompt } from './context.js';
-import { join } from 'path';
 
 describe('ProjectContextExtractor', () => {
   it('should extract context from the current project', async () => {
-    const context = await extractProjectContext(process.cwd());
+    const projectRoot = new URL('../..', import.meta.url).pathname;
+    const context = await extractProjectContext(projectRoot);
     
     expect(context.project_type).toBe('Node.js / TypeScript');
     expect(context.tech_stack).toContain('TypeScript');
@@ -21,7 +21,7 @@ describe('ProjectContextExtractor', () => {
       key_files: ['package.json', 'README.md'],
       framework: '无',
       project_type: 'Node.js / TypeScript',
-      summary: 'LC-Coder',
+      summary: 'lccoder',
       dependencies: { 'ollama': '^0.6.3' },
       devDependencies: { 'vitest': '^4.1.2' },
       structure: ['src', 'prompts'],
@@ -31,6 +31,6 @@ describe('ProjectContextExtractor', () => {
     expect(formatted).toContain('## 当前项目上下文');
     expect(formatted).toContain('Node.js / TypeScript');
     expect(formatted).toContain('TypeScript, Bun');
-    expect(formatted).toContain('LC-Coder');
+    expect(formatted).toContain('lccoder');
   });
 });
